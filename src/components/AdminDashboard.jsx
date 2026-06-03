@@ -11,7 +11,7 @@ export default function AdminDashboard() {
 
   // Forms State
   const [newDept, setNewDept] = useState('');
-  const [newDoc, setNewDoc] = useState({ name: '', department: '', deskId: 'op_desk_1' });
+  const [newDoc, setNewDoc] = useState({ name: '', department: '', roomName: '' });
 
   // Fetch Live Data
   useEffect(() => {
@@ -43,35 +43,37 @@ export default function AdminDashboard() {
     setIsProcessing(false);
   };
 
-  // Add Doctor & Initialize their Queue Desk
+  // Add Doctor & Initialize their Queue Engine
   const handleAddDoctor = async (e) => {
     e.preventDefault();
-    if (!newDoc.name || !newDoc.department) return alert("Fill all doctor details");
+    if (!newDoc.name || !newDoc.department) return alert("Fill all required doctor details");
     setIsProcessing(true);
+    
     try {
-      // 1. Add Doctor Profile
-      await addDoc(collection(db, "doctors"), {
+      // 1. Create the Doctor Profile with the Room (The "Digital Concierge" feature)
+      const docRef = await addDoc(collection(db, "doctors"), {
         name: newDoc.name,
         department: newDoc.department,
-        desk_id: newDoc.deskId,
+        current_room: newDoc.roomName || "Please ask reception", // Productively Lazy fallback
         active: true
       });
 
-      // 2. Initialize their specific Clinic Status Desk so the queue engine works
-      await setDoc(doc(db, "clinic_status", newDoc.deskId), {
-        current_serving_token: 0,
+      // 2. Initialize their personal Queue Engine immediately
+      // We use docRef.id so the queue ID exactly matches the Doctor ID
+      await setDoc(doc(db, "doctor_queues", docRef.id), {
         last_issued_token: 0,
+        current_serving_token: 0,
         baseline_average: 5,
         rolling_average: 5,
         recent_durations: [],
         session_active: false,
         is_paused: false
-      }, { merge: true });
+      });
 
-      setNewDoc({ name: '', department: departments[0]?.name || '', deskId: `op_desk_${doctors.length + 2}` });
-      alert("Doctor onboarded and Desk initialized!");
+      setNewDoc({ name: '', department: departments[0]?.name || '', roomName: '' });
+      alert("Doctor onboarded and Queue Engine initialized!");
     } catch (error) {
-      console.error(error);
+      console.error("Error adding doctor:", error);
     }
     setIsProcessing(false);
   };
@@ -152,8 +154,8 @@ export default function AdminDashboard() {
                   {departments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
                 </select>
                 <input 
-                  type="text" required placeholder="Desk ID (e.g. op_desk_2)"
-                  value={newDoc.deskId} onChange={(e) => setNewDoc({...newDoc, deskId: e.target.value})}
+                  type="text" placeholder="Current Room (Optional)"
+                  value={newDoc.roomName} onChange={(e) => setNewDoc({...newDoc, roomName: e.target.value})}
                   className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium"
                 />
               </div>

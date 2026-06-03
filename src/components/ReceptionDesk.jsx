@@ -46,15 +46,13 @@ export default function ReceptionDesk() {
     if (!patientName || phone.length !== 10 || !selectedDoctor) return alert("Fill all required fields correctly.");
     setIsProcessing(true);
 
-    const targetDoctor = doctors.find(d => d.id === selectedDoctor);
-    const targetDeskId = targetDoctor ? targetDoctor.desk_id : 'op_desk_1';
-    const clinicStatusRef = doc(db, "clinic_status", targetDeskId);
+    const doctorQueueRef = doc(db, "doctor_queues", selectedDoctor);
     const fullPhoneNumber = "+91" + phone;
 
     try {
       await runTransaction(db, async (transaction) => {
-        const clinicSnap = await transaction.get(clinicStatusRef);
-        if (!clinicSnap.exists()) throw `Clinic desk ${targetDeskId} not initialized!`;
+        const clinicSnap = await transaction.get(doctorQueueRef);
+        if (!clinicSnap.exists()) throw `Doctor queue ${selectedDoctor} not initialized!`;
         
         const nextToken = clinicSnap.data().last_issued_token + 1;
 
@@ -90,7 +88,7 @@ export default function ReceptionDesk() {
         });
 
         // C. Increment Doctor Counter
-        transaction.update(clinicStatusRef, { last_issued_token: nextToken });
+        transaction.update(doctorQueueRef, { last_issued_token: nextToken });
 
         // Pass the generated data back to the UI
         return { nextToken, secureTrackerId };

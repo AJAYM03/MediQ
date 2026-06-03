@@ -125,15 +125,11 @@ export default function PatientOnboarding() {
     setIsProcessing(true);
     const fullPhoneNumber = "+91" + phone;
     
-    // Dynamically find the desk ID assigned to this specific doctor by the Admin
-    const targetDoctor = doctors.find(d => d.id === selectedDoctor);
-    const targetDeskId = targetDoctor ? targetDoctor.desk_id : 'op_desk_1';
-    
-    const clinicStatusRef = doc(db, "clinic_status", targetDeskId);
+    const doctorQueueRef = doc(db, "doctor_queues", selectedDoctor);
 
     try {
       await runTransaction(db, async (transaction) => {
-        const clinicSnap = await transaction.get(clinicStatusRef);
+        const clinicSnap = await transaction.get(doctorQueueRef);
         if (!clinicSnap.exists()) throw `Clinic desk ${targetDeskId} not initialized by admin!`;
         
         const nextToken = clinicSnap.data().last_issued_token + 1;
@@ -171,7 +167,7 @@ export default function PatientOnboarding() {
         });
 
         // C. Increment the specific doctor's counter
-        transaction.update(clinicStatusRef, { last_issued_token: nextToken });
+        transaction.update(doctorQueueRef, { last_issued_token: nextToken });
 
         // D. Route to the SECURE personal tracker URL
         navigate(`/tracker/${secureTrackerId}`); // Now it routes to /tracker/aB3xY9Pq...

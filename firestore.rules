@@ -63,8 +63,8 @@ service cloud.firestore {
       allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // CLINIC STATUS: The Array Spam Check
-    match /clinic_status/{deskId} {
+    // DOCTOR QUEUES: The Array Spam Check (Replaced clinic_status)
+    match /doctor_queues/{doctorId} {
       allow read: if true;
       
       // Patients can only increment if their existing booking array has fewer than 3 items.
@@ -79,7 +79,7 @@ service cloud.firestore {
                     );
 
       allow update: if isStaff('nurse') || isStaff('reception'); 
-      allow write: if isStaff('admin'); 
+      allow write: if isStaff('admin'); // Safely tucked inside the match block!
     }
 
     // CONFIGURATION

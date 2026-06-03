@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Clock, Users, Activity, AlertCircle, CalendarClock, User, Stethoscope } from 'lucide-react';
+import { Clock, Users, Activity, AlertCircle, CalendarClock, User, Stethoscope, MapPin } from 'lucide-react';
 
 export default function PatientTracker() {
   const { tokenId } = useParams(); // This is now the secure alphanumeric tracker_id string
@@ -10,6 +10,7 @@ export default function PatientTracker() {
 
   const [patientTicket, setPatientTicket] = useState(null);
   const [clinicData, setClinicData] = useState(null);
+  const [doctorData, setDoctorData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // STEP 1: Listen to the specific secure token document
@@ -31,25 +32,36 @@ export default function PatientTracker() {
     return () => unsubTicket();
   }, [tokenId]);
 
-  // STEP 2: Listen to the live clinic status desk tied to this patient's doctor
+  // STEP 2: Listen to the Doctor's live profile (for the Digital Concierge room mapping)
   useEffect(() => {
-    if (!patientTicket) return;
+    if (!patientTicket?.doctor_id) return;
+    
+    const unsubDoc = onSnapshot(doc(db, "doctors", patientTicket.doctor_id), (snap) => {
+      if (snap.exists()) setDoctorData(snap.data());
+    });
+    
+    return () => unsubDoc();
+  }, [patientTicket]);
+  
+  // STEP 3: Listen to the live queue engine tied directly to this doctor
+  useEffect(() => {
+    if (!patientTicket?.doctor_id) return;
 
-    // Dynamically look up the desk ID assigned to this doctor (e.g., op_desk_1)
-    const targetDeskId = patientTicket.desk_id || 'op_desk_1'; 
-    const clinicRef = doc(db, "clinic_status", targetDeskId);
+    // Dynamically look up the doctor's personal queue engine
+    const queueRef = doc(db, "doctor_queues", patientTicket.doctor_id);
 
-    const unsubClinic = onSnapshot(clinicRef, (docSnap) => {
+    const unsubQueue = onSnapshot(queueRef, (docSnap) => {
       if (docSnap.exists()) {
         setClinicData(docSnap.data());
       }
       setLoading(false);
     });
 
-    return () => unsubClinic();
+    return () => unsubQueue();
   }, [patientTicket]);
 
-  if (loading) return <div className="p-10 text-center font-bold text-gray-600">Verifying secure token link...</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center font-bold text-gray-600">Verifying secure token link...</div>;
+  
   if (!patientTicket) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 text-center">
@@ -79,7 +91,7 @@ export default function PatientTracker() {
         
         {/* Dynamic Security/Status Header */}
         <div className={`p-6 text-white text-center transition-colors ${!sessionActive ? 'bg-indigo-600' : isPaused ? 'bg-orange-500' : 'bg-blue-600'}`}>
-          <h1 className="text-2xl font-bold tracking-tight">City Hospital OP</h1>
+          <h1 className="text-2xl font-bold tracking-tight">MediQ Outpatient</h1>
           <p className="text-white/90 text-sm mt-1 flex items-center justify-center gap-2">
             {!sessionActive ? <CalendarClock size={16} /> : <Activity size={16} />} 
             {!sessionActive ? "Session Not Started" : isPaused ? "Queue Temporarily Paused" : "Live Tracker Active"}
@@ -89,10 +101,23 @@ export default function PatientTracker() {
         {/* Live Tracking Information */}
         <div className="p-8 text-center space-y-6">
           
-          {/* Display Patient Assignment Details */}
-          <div className="text-left bg-gray-50 rounded-xl p-3 border border-gray-100 text-xs text-gray-600 space-y-1">
-            <div className="flex items-center gap-2 font-medium"><User size={14} className="text-gray-400"/> Patient: <span className="text-gray-900 font-bold">{patientTicket.patient_name.split(' ')[0]} {patientTicket.patient_name.split(' ')[1] ? patientTicket.patient_name.split(' ')[1][0] + '.' : ''}</span></div>
-            <div className="flex items-center gap-2 font-medium"><Stethoscope size={14} className="text-gray-400"/> Consultation: <span className="text-gray-900 font-bold">{patientTicket.doctor_name} ({patientTicket.department})</span></div>
+          {/* Display Patient Assignment Details & Digital Concierge */}
+          <div className="text-left bg-gray-50 rounded-xl p-4 border border-gray-100 text-sm text-gray-600 space-y-2">
+            <div className="flex items-center gap-2 font-medium">
+              <User size={16} className="text-gray-400"/> Patient: 
+              <span className="text-gray-900 font-bold">
+                {patientTicket.patient_name.split(' ')[0]} {patientTicket.patient_name.split(' ')[1] ? patientTicket.patient_name.split(' ')[1][0] + '.' : ''}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 font-medium">
+              <Stethoscope size={16} className="text-gray-400"/> Doctor: 
+              <span className="text-gray-900 font-bold">{patientTicket.doctor_name}</span>
+            </div>
+            {/* The Digital Concierge Room Mapping */}
+            <div className="flex items-center gap-2 font-medium pt-2 border-t border-gray-200 mt-2">
+              <MapPin size={16} className="text-emerald-500"/> Location: 
+              <span className="text-emerald-700 font-black">{doctorData?.current_room || "Please ask reception"}</span>
+            </div>
           </div>
 
           {!sessionActive && (

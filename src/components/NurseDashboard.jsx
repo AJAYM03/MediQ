@@ -20,34 +20,27 @@ export default function NurseDashboard() {
     return () => unsubDocs();
   }, []);
 
-  // 2. Dynamically hook into the selected doctor's specific clinic desk
+  // 2. Dynamically hook into the selected doctor's personal queue
   useEffect(() => {
     if (!selectedDoctorId) {
       setClinicData(null);
       return;
     }
-
-    const targetDoctor = doctors.find(d => d.id === selectedDoctorId);
-    if (!targetDoctor || !targetDoctor.desk_id) return;
-
-    const unsubDesk = onSnapshot(doc(db, "clinic_status", targetDoctor.desk_id), (docSnap) => {
+    const unsubDesk = onSnapshot(doc(db, "doctor_queues", selectedDoctorId), (docSnap) => {
       if (docSnap.exists()) {
         setClinicData(docSnap.data());
       } else {
-        console.error("This desk has not been initialized by the Admin yet.");
         setClinicData(null);
       }
     });
-
     return () => unsubDesk();
-  }, [selectedDoctorId, doctors]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDoctorId]);
 
-
-  // --- CORE QUEUE LOGIC (Now routed dynamically) ---
+  // --- CORE QUEUE LOGIC (Now routed dynamically via Doctor ID) ---
 
   const getActiveDeskRef = () => {
-    const targetDoctor = doctors.find(d => d.id === selectedDoctorId);
-    return doc(db, "clinic_status", targetDoctor.desk_id);
+    return doc(db, "doctor_queues", selectedDoctorId);
   };
 
   const toggleSession = async () => {
@@ -113,7 +106,7 @@ export default function NurseDashboard() {
     <div className="min-h-screen bg-gray-900 p-6 flex flex-col items-center justify-start font-sans">
       <div className="w-full max-w-lg space-y-6 mt-10">
         
-        {/* ROOM SELECTOR (The new addition) */}
+        {/* ROOM SELECTOR */}
         <div className="bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-lg">
           <label className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-2 flex items-center gap-2">
             <Stethoscope size={16} className="text-blue-400"/> Select Assignment
