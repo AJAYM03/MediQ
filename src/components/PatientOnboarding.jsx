@@ -56,6 +56,7 @@ export default function PatientOnboarding() {
     });
 
     return () => { unsubDepts(); unsubDocs(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 3. Auto-update Doctor selection when Department changes
@@ -96,8 +97,7 @@ export default function PatientOnboarding() {
     try {
       const result = await window.confirmationResult.confirm(otp);
       const user = result.user;
-
-        setUid(user.uid);
+      setUid(user.uid);
 
       // Check if they are a returning patient to auto-fill details
       const patientRef = doc(db, "patients", user.uid);
@@ -125,14 +125,24 @@ export default function PatientOnboarding() {
     setIsProcessing(true);
     const fullPhoneNumber = "+91" + phone;
     
+    // Fix 1: Properly look up the target doctor to get their name
+    const targetDoctor = doctors.find(d => d.id === selectedDoctor);
+    if (!targetDoctor) {
+      alert("Selected doctor not found.");
+      setIsProcessing(false);
+      return;
+    }
+
     const doctorQueueRef = doc(db, "doctor_queues", selectedDoctor);
 
     try {
-      await runTransaction(db, async (transaction) => {
-        const clinicSnap = await transaction.get(doctorQueueRef);
-        if (!clinicSnap.exists()) throw `Clinic desk ${targetDeskId} not initialized by admin!`;
+      // We return the generated Tracker ID out of the transaction so we can navigate safely
+      const generatedTrackerId = await runTransaction(db, async (transaction) => {
+        const queueSnap = await transaction.get(doctorQueueRef);
+        // Fix 2: Throw a clean error if the Admin hasn't set up the doctor's queue engine
+        if (!queueSnap.exists()) throw new Error(`Doctor queue engine not initialized!`);
         
-        const nextToken = clinicSnap.data().last_issued_token + 1;
+        const nextToken = queueSnap.data().last_issued_token + 1;
 
         // A. Save Profile in 'patients' collection using the Array Lock
         const patientRef = doc(db, "patients", uid);
@@ -151,13 +161,13 @@ export default function PatientOnboarding() {
         const secureTrackerId = queueRef.id;
 
         transaction.set(queueRef, {
-          tracker_id: secureTrackerId, // Save the secure ID inside the document
-          token_number: nextToken,     // The public display number (e.g., 15)
+          tracker_id: secureTrackerId, 
+          token_number: nextToken,     
           patient_uid: uid,
           patient_name: patientName,
           department: selectedDept,
           doctor_id: selectedDoctor,
-          doctor_name: targetDoctor.name,
+          doctor_name: targetDoctor.name, // Fixed: Successfully maps the name
           appointment_date: bookingDate,
           session_block: sessionBlock,
           is_physically_present: false, 
@@ -169,9 +179,12 @@ export default function PatientOnboarding() {
         // C. Increment the specific doctor's counter
         transaction.update(doctorQueueRef, { last_issued_token: nextToken });
 
-        // D. Route to the SECURE personal tracker URL
-        navigate(`/tracker/${secureTrackerId}`); // Now it routes to /tracker/aB3xY9Pq...
+        return secureTrackerId;
       });
+
+      // D. Route to the SECURE personal tracker URL
+      navigate(`/tracker/${generatedTrackerId}`);
+      
     } catch (error) {
       console.error("Booking Transaction Failed:", error);
       alert("Booking failed. Please ensure Admin has fully configured this doctor.");
@@ -190,7 +203,7 @@ export default function PatientOnboarding() {
           <div className="bg-blue-100 w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3 text-blue-600">
              <Activity size={28} />
           </div>
-          <h1 className="text-2xl font-black text-gray-900 tracking-tight">City Hospital OP</h1>
+          <h1 className="text-2xl font-black text-gray-900 tracking-tight">MediQ Outpatient</h1>
           <p className="text-gray-500 font-medium text-sm mt-0.5">Unified Booking Portal</p>
         </div>
 
