@@ -21,49 +21,62 @@ service cloud.firestore {
       allow read: if isAuthenticated() && request.auth.uid == userId;
     }
 
-    // PATIENTS: The Self-Edit Lock
+    // PATIENTS: The Concurrent Array Lock (Max 3 Bookings)
     match /patients/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
       
-      // THE FIX: Patients can write to their own profile, BUT if they try to edit 
-      // the 'has_active_booking' lock, the rule forces it to be 'true'. 
-      // Only staff can set it to 'false' (e.g., when the consultation ends).
+      // THE FIX: The patient can write, but the active_bookings must be a list <= 3 items.
+      // Furthermore, they can only ADD to the list (hasAll enforces append-only).
+      // They cannot delete the array to bypass the lock.
       allow write: if isAuthenticated() && request.auth.uid == userId &&
-                   (!('has_active_booking' in request.resource.data) || 
-                    request.resource.data.has_active_booking == true);
+                   'active_bookings' in request.resource.data &&
+                   request.resource.data.active_bookings is list &&
+                   request.resource.data.active_bookings.size() <= 3 &&
+                   (resource == null || !('active_bookings' in resource.data) || 
+                    request.resource.data.active_bookings.hasAll(resource.data.active_bookings));
                     
       allow write: if isStaff('admin') || isStaff('reception') || isStaff('nurse');
     }
 
-    // QUEUE: Strict Field-Level Validation
+    // QUEUE: Strict Schema Validation
     match /today_queue/{tokenId} {
       // Bearer-link access
       allow get: if true; 
       allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
       
-      // THE FIX: Patients cannot forge operational states. They are forced to 
-      // submit exact, expected values for status, presence, and penalties.
+      // THE FIX: Enforce exact keys, exact constants, and data types.
+      // Patients cannot forge operational states or bypass the counter.
       allow create: if isAuthenticated() && 
                     request.resource.data.patient_uid == request.auth.uid &&
                     request.resource.data.booking_type == "app" && 
                     request.resource.data.is_physically_present == false &&
                     request.resource.data.status == "waiting" &&
-                    request.resource.data.penalty_count == 0;
+                    request.resource.data.penalty_count == 0 &&
+                    request.resource.data.token_number is number &&
+                    request.resource.data.keys().hasOnly([
+                      'tracker_id', 'token_number', 'patient_uid', 'patient_name', 
+                      'department', 'doctor_id', 'doctor_name', 'appointment_date', 
+                      'session_block', 'is_physically_present', 'status', 
+                      'booking_type', 'penalty_count'
+                    ]);
                     
-      // Staff have full control
       allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // CLINIC STATUS: The Spam-Locked Counter
+    // CLINIC STATUS: The Array Spam Check
     match /clinic_status/{deskId} {
       allow read: if true;
       
-      // Patients can ONLY increment the counter if they haven't already booked a token.
-      // (And because of the patients rule above, they can't forge this lock).
+      // Patients can only increment if their existing booking array has fewer than 3 items.
+      // (We use exists() to prevent errors if the patient profile is brand new).
       allow update: if isAuthenticated() &&
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token']) &&
                     request.resource.data.last_issued_token == resource.data.last_issued_token + 1 &&
-                    get(/databases/$(database)/documents/patients/$(request.auth.uid)).data.has_active_booking != true;
+                    (
+                      !exists(/databases/$(database)/documents/patients/$(request.auth.uid)) ||
+                      !('active_bookings' in get(/databases/$(database)/documents/patients/$(request.auth.uid)).data) ||
+                      get(/databases/$(database)/documents/patients/$(request.auth.uid)).data.active_bookings.size() < 3
+                    );
 
       allow update: if isStaff('nurse') || isStaff('reception'); 
       allow write: if isStaff('admin'); 

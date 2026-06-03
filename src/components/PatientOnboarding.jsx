@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
-import { doc, getDoc, collection, runTransaction, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, collection, runTransaction, onSnapshot, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock } from 'lucide-react';
 
@@ -138,7 +138,7 @@ export default function PatientOnboarding() {
         
         const nextToken = clinicSnap.data().last_issued_token + 1;
 
-        // A. Save Profile in 'patients' collection
+        // A. Save Profile in 'patients' collection using the Array Lock
         const patientRef = doc(db, "patients", uid);
         transaction.set(patientRef, {
           full_name: patientName,
@@ -146,7 +146,8 @@ export default function PatientOnboarding() {
           gender: gender,
           phone_number: fullPhoneNumber,
           last_updated: new Date(),
-          has_active_booking: true
+          // arrayUnion safely appends the doctor's ID to the list, preventing duplicates
+          active_bookings: arrayUnion(selectedDoctor) 
         }, { merge: true });
 
         // B. Append to 'today_queue'
