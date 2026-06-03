@@ -26,32 +26,31 @@ service cloud.firestore {
       allow read, write: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
     }
 
-    // QUEUE: The Tracker Fix
+    // QUEUE: The Walk-in and Tamper Fix
     match /today_queue/{tokenId} {
-      // allow get: Anyone with the exact random 20-char URL can view their specific tracker
       allow get: if true; 
-      // allow list: Only staff can pull the full array of today's patients
       allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
       
-      // Patients can create a token, but we force specific fields to prevent tampering
-      allow create: if isAuthenticated() && 
-                    request.resource.data.booking_type == "app" && 
-                    request.resource.data.is_physically_present == false;
+      // STAFF can create walk-ins. PATIENTS must strictly be remote app users.
+      allow create: if isStaff('admin') || isStaff('nurse') || isStaff('reception') ||
+                    (isAuthenticated() && 
+                     request.resource.data.booking_type == "app" && 
+                     request.resource.data.is_physically_present == false &&
+                     request.resource.data.patient_uid == request.auth.uid); // Prevents forging someone else's ID
                     
       allow update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // CLINIC STATUS: The Transaction Fix
+    // CLINIC STATUS: The Spam Fix
     match /clinic_status/{deskId} {
       allow read: if true;
       
-      // THE FIX: Patients can only update this document IF they are strictly incrementing the token by 1.
+      // Patients can ONLY increment the token by exactly 1, and cannot touch average/pause states.
       allow update: if isAuthenticated() &&
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token']) &&
                     request.resource.data.last_issued_token == resource.data.last_issued_token + 1;
 
-      // Staff roles
-      allow update: if isStaff('nurse'); 
+      allow update: if isStaff('nurse') || isStaff('reception'); 
       allow write: if isStaff('admin'); 
     }
 
