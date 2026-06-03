@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
 import { doc, getDoc, collection, runTransaction, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { Phone, User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock } from 'lucide-react';
+import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock } from 'lucide-react';
 
 export default function PatientOnboarding() {
   const navigate = useNavigate();

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, doc, runTransaction, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { UserPlus, Phone, User, Activity, Stethoscope } from 'lucide-react';
+import { UserPlus, User, Activity, Stethoscope } from 'lucide-react';
 
 export default function ReceptionDesk() {
   // Form States
@@ -60,7 +60,7 @@ export default function ReceptionDesk() {
 
         // A. Update the 'patients' collection using an Auto-ID for Walk-Ins
         // We let Firestore generate a secure random ID instead of using the phone number
-        const newPatientRef = doc(collection(db, "patients")); 
+        const newPatientRef = doc(collection(db, "patients"));
         
         transaction.set(newPatientRef, {
           full_name: patientName,
@@ -76,7 +76,7 @@ export default function ReceptionDesk() {
         transaction.set(queueRef, {
           tracker_id: secureTrackerId,
           token_number: nextToken,
-          patient_uid: fullPhoneNumber, // For walk-ins, we can use the phone number as a reference in the queue
+          patient_uid: newPatientRef.id, // For walk-ins, we can use the phone number as a reference in the queue
           patient_name: patientName,
           department: selectedDept,
           doctor_id: selectedDoctor,
