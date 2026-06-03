@@ -16,39 +16,54 @@ service cloud.firestore {
         getRole() == roleType;
     }
 
-    // USERS: Only read own role
+    // USERS: Read-only for self
     match /users/{userId} {
       allow read: if isAuthenticated() && request.auth.uid == userId;
     }
 
-    // PATIENTS: Null-safe check, staff access
+    // PATIENTS: The Self-Edit Lock
     match /patients/{userId} {
-      allow read, write: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
+      
+      // THE FIX: Patients can write to their own profile, BUT if they try to edit 
+      // the 'has_active_booking' lock, the rule forces it to be 'true'. 
+      // Only staff can set it to 'false' (e.g., when the consultation ends).
+      allow write: if isAuthenticated() && request.auth.uid == userId &&
+                   (!('has_active_booking' in request.resource.data) || 
+                    request.resource.data.has_active_booking == true);
+                    
+      allow write: if isStaff('admin') || isStaff('reception') || isStaff('nurse');
     }
 
-    // QUEUE: The Walk-in and Tamper Fix
+    // QUEUE: Strict Field-Level Validation
     match /today_queue/{tokenId} {
+      // Bearer-link access
       allow get: if true; 
       allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
       
-      // STAFF can create walk-ins. PATIENTS must strictly be remote app users.
-      allow create: if isStaff('admin') || isStaff('nurse') || isStaff('reception') ||
-                    (isAuthenticated() && 
-                     request.resource.data.booking_type == "app" && 
-                     request.resource.data.is_physically_present == false &&
-                     request.resource.data.patient_uid == request.auth.uid); // Prevents forging someone else's ID
+      // THE FIX: Patients cannot forge operational states. They are forced to 
+      // submit exact, expected values for status, presence, and penalties.
+      allow create: if isAuthenticated() && 
+                    request.resource.data.patient_uid == request.auth.uid &&
+                    request.resource.data.booking_type == "app" && 
+                    request.resource.data.is_physically_present == false &&
+                    request.resource.data.status == "waiting" &&
+                    request.resource.data.penalty_count == 0;
                     
-      allow update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
+      // Staff have full control
+      allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // CLINIC STATUS: The Spam Fix
+    // CLINIC STATUS: The Spam-Locked Counter
     match /clinic_status/{deskId} {
       allow read: if true;
       
-      // Patients can ONLY increment the token by exactly 1, and cannot touch average/pause states.
+      // Patients can ONLY increment the counter if they haven't already booked a token.
+      // (And because of the patients rule above, they can't forge this lock).
       allow update: if isAuthenticated() &&
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token']) &&
-                    request.resource.data.last_issued_token == resource.data.last_issued_token + 1;
+                    request.resource.data.last_issued_token == resource.data.last_issued_token + 1 &&
+                    get(/databases/$(database)/documents/patients/$(request.auth.uid)).data.has_active_booking != true;
 
       allow update: if isStaff('nurse') || isStaff('reception'); 
       allow write: if isStaff('admin'); 

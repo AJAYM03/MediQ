@@ -145,7 +145,8 @@ export default function PatientOnboarding() {
           age: Number(age),
           gender: gender,
           phone_number: fullPhoneNumber,
-          last_updated: new Date()
+          last_updated: new Date(),
+          has_active_booking: true
         }, { merge: true });
 
         // B. Append to 'today_queue'
