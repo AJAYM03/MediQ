@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+  
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isStaff(roleType) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        getRole() == roleType;
+    }
+
+    // USERS: Only read own role
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // PATIENTS: Null-safe check, staff access
+    match /patients/{userId} {
+      allow read, write: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
+    }
+
+    // QUEUE: The Tracker Fix
+    match /today_queue/{tokenId} {
+      // allow get: Anyone with the exact random 20-char URL can view their specific tracker
+      allow get: if true; 
+      // allow list: Only staff can pull the full array of today's patients
+      allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
+      
+      // Patients can create a token, but we force specific fields to prevent tampering
+      allow create: if isAuthenticated() && 
+                    request.resource.data.booking_type == "app" && 
+                    request.resource.data.is_physically_present == false;
+                    
+      allow update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
+    }
+
+    // CLINIC STATUS: The Transaction Fix
+    match /clinic_status/{deskId} {
+      allow read: if true;
+      
+      // THE FIX: Patients can only update this document IF they are strictly incrementing the token by 1.
+      allow update: if isAuthenticated() &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token']) &&
+                    request.resource.data.last_issued_token == resource.data.last_issued_token + 1;
+
+      // Staff roles
+      allow update: if isStaff('nurse'); 
+      allow write: if isStaff('admin'); 
+    }
+
+    // CONFIGURATION
+    match /departments/{deptId} {
+      allow read: if true;
+      allow write: if isStaff('admin');
+    }
+    match /doctors/{docId} {
+      allow read: if true;
+      allow write: if isStaff('admin');
+    }
+  }
+}

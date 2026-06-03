@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+.vite/
+
+# Environment files
+.env
+.env.*
+*.local
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+firebase-debug.log*
+firestore-debug.log*
+database-debug.log*
+storage-debug.log*
+pubsub-debug.log*
+ui-debug.log*
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Firebase local state and emulator exports
+.firebase/
+firebase-export-*/
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+
+# Deployment/tooling output
+.vercel/
+.netlify/
+
+# TypeScript incremental cache
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
