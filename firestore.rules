@@ -16,18 +16,15 @@ service cloud.firestore {
         getRole() == roleType;
     }
 
-    // USERS: Read-only for self
+    // USERS
     match /users/{userId} {
       allow read: if isAuthenticated() && request.auth.uid == userId;
     }
 
-    // PATIENTS: The Concurrent Array Lock (Max 3 Bookings)
+    // PATIENTS
     match /patients/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
       
-      // THE FIX: The patient can write, but the active_bookings must be a list <= 3 items.
-      // Furthermore, they can only ADD to the list (hasAll enforces append-only).
-      // They cannot delete the array to bypass the lock.
       allow write: if isAuthenticated() && request.auth.uid == userId &&
                    'active_bookings' in request.resource.data &&
                    request.resource.data.active_bookings is list &&
@@ -38,19 +35,17 @@ service cloud.firestore {
       allow write: if isStaff('admin') || isStaff('reception') || isStaff('nurse');
     }
 
-    // QUEUE: Strict Schema Validation
+    // QUEUE: 6-State Machine Validation
     match /today_queue/{tokenId} {
-      // Bearer-link access
       allow get: if true; 
       allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
       
-      // THE FIX: Enforce exact keys, exact constants, and data types.
-      // Patients cannot forge operational states or bypass the counter.
       allow create: if isAuthenticated() && 
                     request.resource.data.patient_uid == request.auth.uid &&
                     request.resource.data.booking_type == "app" && 
                     request.resource.data.is_physically_present == false &&
-                    request.resource.data.status == "waiting" &&
+                    // ALLOW THE NEW STATES!
+                    request.resource.data.status in ["booked", "arrived", "called", "in_consultation", "completed", "skipped"] &&
                     request.resource.data.penalty_count == 0 &&
                     request.resource.data.token_number is number &&
                     request.resource.data.keys().hasOnly([
@@ -63,14 +58,13 @@ service cloud.firestore {
       allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // DOCTOR QUEUES: The Array Spam Check (Replaced clinic_status)
+    // DOCTOR QUEUES: The Daily Bookings capacity fix!
     match /doctor_queues/{doctorId} {
       allow read: if true;
       
-      // Patients can only increment if their existing booking array has fewer than 3 items.
-      // (We use exists() to prevent errors if the patient profile is brand new).
       allow update: if isAuthenticated() &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token']) &&
+                    // ADDED 'daily_bookings' TO THE APPROVED LIST
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_issued_token', 'daily_bookings']) &&
                     request.resource.data.last_issued_token == resource.data.last_issued_token + 1 &&
                     (
                       !exists(/databases/$(database)/documents/patients/$(request.auth.uid)) ||
@@ -79,7 +73,7 @@ service cloud.firestore {
                     );
 
       allow update: if isStaff('nurse') || isStaff('reception'); 
-      allow write: if isStaff('admin'); // Safely tucked inside the match block!
+      allow write: if isStaff('admin');
     }
 
     // CONFIGURATION
