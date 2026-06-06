@@ -75,14 +75,7 @@ export default function AdminDashboard() {
 
       // 2. Initialize Queue Engine
       await setDoc(doc(db, "doctor_queues", docRef.id), {
-        last_issued_token: 0,
-        current_serving_token: 0,
-        baseline_average: 5,
-        rolling_average: 5,
-        recent_durations: [],
-        session_active: false,
-        is_paused: false,
-        daily_bookings: {} // { "2023-10-25_Morning": 12, "2023-10-25_Evening": 5 }
+        daily_bookings: {}
       });
 
       setNewDoc({ 

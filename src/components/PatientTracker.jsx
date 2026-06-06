@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Clock, AlertCircle, User, MapPin, Users, Activity } from 'lucide-react';
+import { createSessionState } from '../utils/queueSession';
 
 export default function PatientTracker() {
   const { tokenId } = useParams();
@@ -11,6 +12,7 @@ export default function PatientTracker() {
   const [ticket, setTicket] = useState(null);
   const [docProfile, setDocProfile] = useState(null);
   const [queueEngine, setQueueEngine] = useState(null);
+  const [clockTick, setClockTick] = useState(Date.now());
 
   // 1. Fetch Ticket
   useEffect(() => {
@@ -38,6 +40,11 @@ export default function PatientTracker() {
     return () => unsub();
   }, [ticket]);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setClockTick(Date.now()), 60000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
 
   // --- THE ADVANCED DUAL-ENGINE ETA ---
   const getDynamicETA = () => {
@@ -47,18 +54,25 @@ export default function PatientTracker() {
     const scheduleConfig = isMorning ? docProfile.op_schedule.morning : docProfile.op_schedule.evening;
     if (!scheduleConfig || !scheduleConfig.startTime) return { time: "--:--", ahead: 0, liveAvg: 5 };
 
+    const sessionState = createSessionState(queueEngine.daily_bookings?.[ticket.session_key]);
     const myToken = ticket.token_number;
-    const currentServing = queueEngine.current_serving_token || 0;
+    const currentServing = sessionState.current_serving_token || 0;
     const peopleAhead = Math.max(0, myToken - currentServing - 1); // -1 because current is inside
     
-    const targetDate = new Date();
+    const targetDate = new Date(clockTick);
 
     // MODE 1: LIVE SESSION
-    if (queueEngine.session_active) {
-      const liveAvg = queueEngine.rolling_average || 5;
-      const totalWaitMins = peopleAhead * liveAvg;
+    if (sessionState.session_active) {
+      const liveAvg = sessionState.rolling_average || 5;
+      let currentRemainingMins = liveAvg;
+      if (sessionState.last_consultation_start_time) {
+        const startedAt = sessionState.last_consultation_start_time.toDate();
+        const elapsedMins = Math.max(0, (clockTick - startedAt.getTime()) / 60000);
+        currentRemainingMins = Math.max(0, liveAvg - elapsedMins);
+      }
+
+      const totalWaitMins = currentRemainingMins + (peopleAhead * liveAvg);
       
-      // Calculate from EXACT CURRENT TIME
       targetDate.setMinutes(targetDate.getMinutes() + totalWaitMins);
       
       return {
@@ -71,10 +85,12 @@ export default function PatientTracker() {
     // MODE 2: PRE-SESSION (Doctor hasn't started yet)
     else {
       const [startHour, startMinute] = scheduleConfig.startTime.split(':').map(Number);
-      const baselineAvg = queueEngine.baseline_average || 5;
+      const baselineAvg = sessionState.baseline_average || 5;
       const totalWaitMins = (myToken - 1) * baselineAvg;
       
       // Calculate from SCHEDULED START TIME
+      const [year, month, day] = ticket.appointment_date.split('-').map(Number);
+      targetDate.setFullYear(year, month - 1, day);
       targetDate.setHours(startHour, startMinute + totalWaitMins, 0);
       
       return {
@@ -101,6 +117,7 @@ export default function PatientTracker() {
   
   const ui = getStateUI();
   const etaData = getDynamicETA();
+  const sessionState = createSessionState(queueEngine.daily_bookings?.[ticket.session_key]);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center justify-center font-sans">
@@ -135,7 +152,7 @@ export default function PatientTracker() {
           <div className="bg-blue-50 rounded-2xl p-6 border border-blue-100 relative overflow-hidden">
             
             {/* Live Indicator */}
-            {queueEngine.session_active && (
+            {sessionState.session_active && (
               <div className="absolute top-4 right-4 flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-100 px-2 py-1 rounded-full animate-pulse">
                 <Activity size={12} /> LIVE ETA
               </div>

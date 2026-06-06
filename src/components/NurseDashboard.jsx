@@ -2,10 +2,13 @@ import { useState, useEffect } from 'react';
 import { collection, doc, onSnapshot, updateDoc, query, where, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { ArrowRight, SkipForward, PlayCircle, AlertCircle, Activity } from 'lucide-react';
+import { createSessionState, getSessionKey } from '../utils/queueSession';
 
 export default function NurseDashboard() {
   const [doctors, setDoctors] = useState([]);
   const [selectedDoctorId, setSelectedDoctorId] = useState('');
+  const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
+  const [sessionBlock, setSessionBlock] = useState('Morning');
   
   // The State Machine Trackers
   const [activePatient, setActivePatient] = useState(null); 
@@ -13,6 +16,8 @@ export default function NurseDashboard() {
   
   // THE MISSING PIECE: The Math Engine Tracker
   const [queueEngine, setQueueEngine] = useState(null);
+  const sessionKey = getSessionKey(sessionDate, sessionBlock);
+  const sessionState = createSessionState(queueEngine?.daily_bookings?.[sessionKey]);
 
   // 1. Fetch Doctors list
   useEffect(() => {
@@ -35,11 +40,11 @@ export default function NurseDashboard() {
   useEffect(() => {
     if (!selectedDoctorId) return;
     
-    const today = new Date().toISOString().split('T')[0];
     const q = query(
       collection(db, "today_queue"), 
       where("doctor_id", "==", selectedDoctorId),
-      where("appointment_date", "==", today) // Security filter
+      where("appointment_date", "==", sessionDate),
+      where("session_block", "==", sessionBlock)
     );
     
     const unsub = onSnapshot(q, (snap) => {
@@ -56,7 +61,17 @@ export default function NurseDashboard() {
       setWaitingQueue(waiting);
     });
     return () => unsub();
-  }, [selectedDoctorId]);
+  }, [selectedDoctorId, sessionDate, sessionBlock]);
+
+  const getQueueRef = () => doc(db, "doctor_queues", selectedDoctorId);
+
+  const updateSessionState = async (patch) => {
+    const updates = {};
+    Object.entries(patch).forEach(([key, value]) => {
+      updates[`daily_bookings.${sessionKey}.${key}`] = value;
+    });
+    await updateDoc(getQueueRef(), updates);
+  };
 
   // --- RESTORED MATHEMATICAL STATE ACTIONS ---
 
@@ -68,23 +83,24 @@ export default function NurseDashboard() {
     await updateDoc(doc(db, "today_queue", activePatient.id), { status: "in_consultation" });
     
     // 2. Start the clock on the Engine
-    await updateDoc(doc(db, "doctor_queues", selectedDoctorId), {
-      last_call_time: serverTimestamp(),
-      session_active: true // Wakes up the Live ETA mode on patients' phones!
+    await updateSessionState({
+      last_consultation_start_time: serverTimestamp(),
+      session_active: true,
+      is_paused: false
     });
   };
 
   // Action B: Finish current, calculate math, call next.
   const handleCallNext = async () => {
-    let newAverage = queueEngine?.rolling_average || 5;
-    let newDurations = queueEngine?.recent_durations || [];
+    let newAverage = sessionState.rolling_average || 5;
+    let newDurations = sessionState.recent_durations || [];
 
     // 1. If someone was in the room, finish them and calculate duration
     if (activePatient) {
       await updateDoc(doc(db, "today_queue", activePatient.id), { status: "completed" });
       
-      if (queueEngine?.last_call_time) {
-        const lastCallDate = queueEngine.last_call_time.toDate();
+      if (sessionState.last_consultation_start_time) {
+        const lastCallDate = sessionState.last_consultation_start_time.toDate();
         // Calculate mins passed (Min 1, Max 30 to prevent crazy outliers)
         const durationMins = Math.max(1, Math.min(30, Number(((new Date() - lastCallDate) / 60000).toFixed(1))));
         
@@ -99,15 +115,16 @@ export default function NurseDashboard() {
       await updateDoc(doc(db, "today_queue", nextUp.id), { status: "called" });
       
       // 3. Update the Math Engine so Trackers recalculate!
-      await updateDoc(doc(db, "doctor_queues", selectedDoctorId), {
+      await updateSessionState({
         current_serving_token: nextUp.token_number, // Tells waiting patients who is inside!
         rolling_average: newAverage,
         recent_durations: newDurations,
-        session_active: true
+        session_active: true,
+        is_paused: false
       });
     } else {
       // If no one is left, just save the final math and pause the session
-      await updateDoc(doc(db, "doctor_queues", selectedDoctorId), {
+      await updateSessionState({
         rolling_average: newAverage,
         recent_durations: newDurations,
         session_active: false
@@ -137,6 +154,23 @@ export default function NurseDashboard() {
           {doctors.map(doc => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
         </select>
 
+        <div className="grid grid-cols-2 gap-3">
+          <input
+            type="date"
+            value={sessionDate}
+            onChange={(e) => setSessionDate(e.target.value)}
+            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold"
+          />
+          <select
+            value={sessionBlock}
+            onChange={(e) => setSessionBlock(e.target.value)}
+            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold"
+          >
+            <option value="Morning">Morning</option>
+            <option value="Evening">Evening</option>
+          </select>
+        </div>
+
         {selectedDoctorId && queueEngine && (
           <div className="space-y-4">
             {/* Active Display Panel */}
@@ -144,8 +178,8 @@ export default function NurseDashboard() {
               
               {/* Live Math Stats Indicator */}
               <div className="absolute top-4 left-4 right-4 flex justify-between text-xs font-bold text-gray-400">
-                <span className="flex items-center gap-1"><Activity size={14}/> Avg: {queueEngine.rolling_average}m</span>
-                <span>Max: {doctors.find(d=>d.id===selectedDoctorId)?.op_schedule?.morning?.capacity || 20}</span>
+                <span className="flex items-center gap-1"><Activity size={14}/> Avg: {sessionState.rolling_average}m</span>
+                <span>Max: {sessionState.capacity || 20}</span>
               </div>
 
               <p className="text-gray-500 font-bold uppercase mb-2 mt-4">Current Status</p>

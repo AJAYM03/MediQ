@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, runTransaction } from 'firebase/firestore';
 import { db } from '../firebase';
 import { UserPlus, User, Activity, Stethoscope, CheckCircle, Clock, AlertCircle } from 'lucide-react';
+import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 
 export default function ReceptionDesk() {
   // --- STATE FOR ONLINE CHECK-INS ---
@@ -92,17 +93,23 @@ export default function ReceptionDesk() {
         if (!queueSnap.exists()) throw new Error('INIT_ERROR');
         
         const queueData = queueSnap.data();
-        const nextToken = queueData.last_issued_token + 1;
 
         // Capacity Check for Walk-ins
-        const blockKey = `${today}_${sessionBlock}`;
+        const blockKey = getSessionKey(today, sessionBlock);
         const dailyBookingsMap = queueData.daily_bookings || {};
-        const blockCount = dailyBookingsMap[blockKey] || 0;
         
-        const sessionConfig = sessionBlock === 'Morning' ? activeDocProfile?.op_schedule?.morning : activeDocProfile?.op_schedule?.evening;
+        const sessionConfig = getSessionConfig(activeDocProfile, sessionBlock);
         const maxCapacity = sessionConfig?.capacity || 20;
+        const sessionState = createSessionState(dailyBookingsMap[blockKey], maxCapacity);
+        const blockCount = sessionState.last_token;
 
         if (blockCount >= maxCapacity) throw new Error('CAPACITY_FULL');
+        const nextToken = sessionState.last_token + 1;
+        const nextSessionState = {
+          ...sessionState,
+          last_token: nextToken,
+          capacity: maxCapacity
+        };
 
         // 1. Create Patient Profile Auto-ID
         const newPatientRef = doc(collection(db, "patients"));
@@ -118,16 +125,15 @@ export default function ReceptionDesk() {
           tracker_id: secureTrackerId, token_number: nextToken, patient_uid: newPatientRef.id,
           patient_name: patientName, department: selectedDept, doctor_id: selectedDoctor,
           doctor_name: activeDocProfile.name, appointment_date: today,
-          session_block: sessionBlock, // Valid Morning/Evening block!
+          session_block: sessionBlock, session_key: blockKey, // Valid Morning/Evening block!
           is_physically_present: true, 
           status: "arrived", // Straight to active queue!
           booking_type: "walk-in", penalty_count: 0
         });
 
-        // 3. Update Engine Counters
+        // 3. Update this date/session counter only.
         transaction.update(doctorQueueRef, { 
-          last_issued_token: nextToken,
-          daily_bookings: { ...dailyBookingsMap, [blockKey]: blockCount + 1 }
+          daily_bookings: { ...dailyBookingsMap, [blockKey]: nextSessionState }
         });
 
         return { nextToken, secureTrackerId };

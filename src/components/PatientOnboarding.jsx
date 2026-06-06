@@ -4,6 +4,7 @@ import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
 import { doc, getDoc, collection, runTransaction, onSnapshot, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock, AlertCircle } from 'lucide-react';
+import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 
 export default function PatientOnboarding() {
   const navigate = useNavigate();
@@ -141,26 +142,30 @@ export default function PatientOnboarding() {
         const queueData = queueSnap.data();
         
         // 2. Validate Specific Session Capacity (e.g., Morning vs Evening) with Safe Fallbacks!
-        const sessionConfig = sessionBlock === 'Morning' 
-            ? activeDocProfile?.op_schedule?.morning 
-            : activeDocProfile?.op_schedule?.evening;
+        const sessionConfig = getSessionConfig(activeDocProfile, sessionBlock);
             
         const maxCapacity = sessionConfig?.capacity || 20; // Safely defaults to 20 if missing
         
-        const blockKey = `${bookingDate}_${sessionBlock}`; // e.g., "2023-10-25_Morning"
+        const blockKey = getSessionKey(bookingDate, sessionBlock); // e.g., "2023-10-25_Morning"
         const dailyBookingsMap = queueData.daily_bookings || {};
-        const blockCount = dailyBookingsMap[blockKey] || 0;
+        const sessionState = createSessionState(dailyBookingsMap[blockKey], maxCapacity);
+        const blockCount = sessionState.last_token;
 
         if (blockCount >= maxCapacity) {
           throw new Error('CAPACITY_FULL');
         }
 
-        const nextToken = queueData.last_issued_token + 1;
+        const nextToken = sessionState.last_token + 1;
+        const nextSessionState = {
+          ...sessionState,
+          last_token: nextToken,
+          capacity: maxCapacity
+        };
 
         // Save Profile
         transaction.set(doc(db, "patients", uid), {
           full_name: patientName, age: Number(age), gender: gender, phone_number: "+91" + phone,
-          last_updated: new Date(), active_bookings: arrayUnion(selectedDoctor) 
+          last_updated: new Date(), active_bookings: arrayUnion(`${selectedDoctor}_${blockKey}`) 
         }, { merge: true });
 
         // Generate Ticket
@@ -171,14 +176,13 @@ export default function PatientOnboarding() {
           tracker_id: secureTrackerId, token_number: nextToken, patient_uid: uid,
           patient_name: patientName, department: selectedDept, doctor_id: selectedDoctor,
           doctor_name: activeDocProfile.name, appointment_date: bookingDate,
-          session_block: sessionBlock, is_physically_present: false, 
+          session_block: sessionBlock, session_key: blockKey, is_physically_present: false, 
           status: "booked", booking_type: "app", penalty_count: 0
         });
 
-        // Increment Global Token AND Specific Block Counter
+        // Increment only this doctor/date/session counter.
         transaction.update(doctorQueueRef, { 
-          last_issued_token: nextToken,
-          daily_bookings: { ...dailyBookingsMap, [blockKey]: blockCount + 1 }
+          daily_bookings: { ...dailyBookingsMap, [blockKey]: nextSessionState }
         });
 
         return secureTrackerId;
