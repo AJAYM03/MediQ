@@ -157,6 +157,11 @@ export default function NurseDashboard() {
       status: "arrived", 
       penalty_count: activePatient.penalty_count + 1 
     });
+
+    await updateSessionState({
+      session_active: false,
+      is_paused: false
+    });
   };
 
   return (

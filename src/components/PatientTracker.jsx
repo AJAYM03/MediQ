@@ -1,22 +1,20 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Clock, AlertCircle, User, MapPin, Users, Activity, Timer } from 'lucide-react';
+import { Clock, AlertCircle, User, MapPin, Users, Activity, Timer, Info } from 'lucide-react';
 import { createSessionState } from '../utils/queueSession';
 
 export default function PatientTracker() {
   const { tokenId } = useParams();
-  const navigate = useNavigate();
   
-  // --- STATES ---
   const [ticket, setTicket] = useState(null);
   const [docProfile, setDocProfile] = useState(null);
   const [queueEngine, setQueueEngine] = useState(null);
   const [activeQueue, setActiveQueue] = useState([]); 
-  const [clockTick, setClockTick] = useState(Date.now()); 
+  
+  const [clockTick, setClockTick] = useState(() => Date.now()); 
 
-  // 1. Fetch Ticket (FIXED: Included snap.id)
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "today_queue", tokenId), (snap) => {
       if (snap.exists()) setTicket({ id: snap.id, ...snap.data() });
@@ -24,7 +22,6 @@ export default function PatientTracker() {
     return () => unsub();
   }, [tokenId]);
 
-  // 2. Fetch Doctor Profile
   useEffect(() => {
     if (!ticket?.doctor_id) return;
     const unsub = onSnapshot(doc(db, "doctors", ticket.doctor_id), (snap) => {
@@ -33,7 +30,6 @@ export default function PatientTracker() {
     return () => unsub();
   }, [ticket]);
 
-  // 3. Fetch Live Queue Engine
   useEffect(() => {
     if (!ticket?.doctor_id) return;
     const unsub = onSnapshot(doc(db, "doctor_queues", ticket.doctor_id), (snap) => {
@@ -42,40 +38,33 @@ export default function PatientTracker() {
     return () => unsub();
   }, [ticket]);
 
-  // 4. Fetch the full session queue to determine True Virtual Order
+  // THE FIX: doctor_id isolation AND ["arrived", "called"] hallway bridge
   useEffect(() => {
-    if (!ticket?.session_key) return;
-    
-    // FIXED: Only fetch 'arrived' to match the Nurse's physical reality
+    if (!ticket?.session_key || !ticket?.doctor_id) return;
     const q = query(
       collection(db, "today_queue"),
+      where("doctor_id", "==", ticket.doctor_id),
       where("session_key", "==", ticket.session_key),
-      where("status", "==", "arrived") 
+      where("status", "in", ["arrived", "called"]) 
     );
-    
     const unsub = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      
       docs.sort((a, b) => {
         const PENALTY_WEIGHT = 3;
         const aVirtualToken = a.token_number + ((a.penalty_count || 0) * PENALTY_WEIGHT);
         const bVirtualToken = b.token_number + ((b.penalty_count || 0) * PENALTY_WEIGHT);
         return aVirtualToken - bVirtualToken;
       });
-      
       setActiveQueue(docs);
     });
-    
     return () => unsub();
-  }, [ticket?.session_key]);
+  }, [ticket?.session_key, ticket?.doctor_id]);
 
-  // 5. Local Clock Ticker for Live Countdown Updates
   useEffect(() => {
     const intervalId = window.setInterval(() => setClockTick(Date.now()), 60000); 
     return () => window.clearInterval(intervalId);
   }, []);
 
-  // --- THE ADVANCED DUAL-ENGINE ETA ---
   const getDynamicETA = () => {
     if (!ticket || !docProfile?.op_schedule || !queueEngine) return null;
     
@@ -86,57 +75,72 @@ export default function PatientTracker() {
     const sessionState = createSessionState(queueEngine.daily_bookings?.[ticket.session_key]);
     const myToken = ticket.token_number;
     
-    // TRUE VIRTUAL INDEXING
-    let peopleAhead = 0;
+    let targetDate;
+    let liveAvg;
+    let displayAhead;
+    let lobbyIndex;
+    let currentElapsed = 0; 
+
     const myVirtualIndex = activeQueue.findIndex(t => t.id === ticket.id);
     
     if (myVirtualIndex !== -1) {
-      peopleAhead = myVirtualIndex; 
+      lobbyIndex = myVirtualIndex; 
     } else {
+      // Fallback: Safe math that handles penalties
       const currentServing = sessionState.current_serving_token || 0;
-      peopleAhead = Math.max(0, myToken - currentServing - 1);
+      lobbyIndex = Math.max(0, (myToken + (ticket.penalty_count * 3)) - currentServing - 1);
     }
-    
-    let targetDate;
-    let liveAvg = 5;
 
-    // MODE 1: LIVE SESSION (Elapsed Time Decay Math)
+    // MODE 1: LIVE SESSION
     if (sessionState.session_active) {
       liveAvg = sessionState.rolling_average || 5;
       let currentRemainingMins = liveAvg;
       
       if (sessionState.last_consultation_start_time) {
         const startedAt = sessionState.last_consultation_start_time.toDate();
-        const elapsedMins = Math.max(0, (clockTick - startedAt.getTime()) / 60000);
-        currentRemainingMins = Math.max(0, liveAvg - elapsedMins);
+        currentElapsed = Math.floor(Math.max(0, (clockTick - startedAt.getTime()) / 60000));
+        currentRemainingMins = Math.max(0, liveAvg - currentElapsed);
       }
 
-      const totalWaitMins = currentRemainingMins + (peopleAhead * liveAvg);
-      
+      const totalWaitMins = currentRemainingMins + (lobbyIndex * liveAvg);
       targetDate = new Date(clockTick + (totalWaitMins * 60000));
+
+      displayAhead = lobbyIndex + 1;
+
     } 
-    
-    // MODE 2: PRE-SESSION (Frozen Start Time)
+    // MODE 2: PRE-SESSION / PAUSED SESSION
     else {
       const [startHour, startMinute] = scheduleConfig.startTime.split(':').map(Number);
       liveAvg = sessionState.baseline_average || 5;
-      const totalWaitMins = (myToken - 1) * liveAvg;
+      
+      const totalWaitMins = lobbyIndex * liveAvg;
       
       const [year, month, day] = ticket.appointment_date.split('-').map(Number);
-      targetDate = new Date(year, month - 1, day, startHour, startMinute + totalWaitMins);
+      const scheduledStart = new Date(year, month - 1, day, startHour, startMinute);
+      
+      const anchorTime = Math.max(clockTick, scheduledStart.getTime());
+      targetDate = new Date(anchorTime + (totalWaitMins * 60000));
+      
+      displayAhead = lobbyIndex;
+    }
+
+    if (ticket.status === 'called' || ticket.status === 'in_consultation') {
+      displayAhead = 0;
     }
 
     const diffMs = targetDate.getTime() - clockTick;
     const minutesRemaining = Math.max(0, Math.ceil(diffMs / 60000));
     
     let countdownText = `${minutesRemaining} mins remaining`;
-    if (minutesRemaining <= 0) countdownText = "Up Next / Delayed";
+    
+    if (minutesRemaining <= 0) countdownText = "Doctor Running Behind Schedule";
 
     return {
       clockTime: targetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       countdown: countdownText,
-      ahead: peopleAhead,
-      liveAvg: liveAvg
+      ahead: displayAhead,
+      liveAvg: liveAvg,
+      currentElapsed: currentElapsed
     };
   };
 
@@ -155,8 +159,10 @@ export default function PatientTracker() {
   if (!ticket || !queueEngine) return <div className="p-10 text-center font-bold text-gray-400">Verifying secure token...</div>;
   
   const ui = getStateUI();
-  const etaData = getDynamicETA() || { clockTime: "--:--", countdown: "Calculating...", ahead: 0, liveAvg: 0 };
+  const etaData = getDynamicETA() || { clockTime: "--:--", countdown: "Calculating...", ahead: 0, liveAvg: 0, currentElapsed: 0 };
   const sessionState = createSessionState(queueEngine.daily_bookings?.[ticket.session_key]);
+
+  const isActivelyWaiting = ['booked', 'arrived'].includes(ticket.status);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center justify-center font-sans">
@@ -197,29 +203,41 @@ export default function PatientTracker() {
               <p className="text-blue-800 font-bold text-sm">Estimated Consultation</p>
               
               <span className="text-3xl font-black text-blue-900">
-                {ticket.status === 'completed' ? "--:--" : etaData.clockTime}
+                {isActivelyWaiting ? etaData.clockTime : "--:--"}
               </span>
               
-              {ticket.status !== 'completed' && ticket.status !== 'in_consultation' && (
-                <div className="mt-1 flex items-center gap-1.5 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">
+              {isActivelyWaiting && (
+                <div className={`mt-1 flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${etaData.countdown.includes("Behind") ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"}`}>
                    <Timer size={14} /> {etaData.countdown}
                 </div>
               )}
             </div>
 
-            {ticket.status !== 'completed' && ticket.status !== 'in_consultation' && (
-              <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-blue-100/50">
-                <div className="flex flex-col items-center">
-                  <Users className="text-blue-400 mb-1" size={16} />
-                  <span className="text-lg font-bold text-blue-900">{etaData.ahead}</span>
-                  <span className="text-xs text-blue-500 font-medium">Ahead of you</span>
+            {isActivelyWaiting && sessionState.session_active && etaData.currentElapsed > 0 && (
+               <div className="mt-2 text-xs text-blue-600 font-medium bg-blue-100/50 py-1.5 px-3 rounded-lg inline-block">
+                 Current Patient: {etaData.currentElapsed} mins elapsed
+               </div>
+            )}
+
+            {isActivelyWaiting && (
+              <>
+                <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-blue-100/50">
+                  <div className="flex flex-col items-center">
+                    <Users className="text-blue-400 mb-1" size={16} />
+                    <span className="text-lg font-bold text-blue-900">{etaData.ahead}</span>
+                    <span className="text-xs text-blue-500 font-medium">Ahead of you</span>
+                  </div>
+                  <div className="flex flex-col items-center">
+                    <Activity className="text-blue-400 mb-1" size={16} />
+                    <span className="text-lg font-bold text-blue-900">{etaData.liveAvg}m</span>
+                    <span className="text-xs text-blue-500 font-medium">Typical consult</span>
+                  </div>
                 </div>
-                <div className="flex flex-col items-center">
-                  <Activity className="text-blue-400 mb-1" size={16} />
-                  <span className="text-lg font-bold text-blue-900">{etaData.liveAvg}m</span>
-                  <span className="text-xs text-blue-500 font-medium">Avg pace</span>
+                
+                <div className="mt-5 text-[10px] text-blue-400 font-medium flex items-center justify-center gap-1 text-center leading-tight">
+                  <Info size={12} className="shrink-0"/> ETA adjusts automatically based on live queue progress.
                 </div>
-              </div>
+              </>
             )}
           </div>
 
