@@ -79,9 +79,27 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isStaff('admin');
     }
+    
+    // DOCTORS: With context-aware Capacity Enforcement
     match /doctors/{docId} {
       allow read: if true;
-      allow write: if isStaff('admin');
+      
+      allow write: if isStaff('admin') && 
+        (
+          // 1. Skip validation if op_schedule isn't being written
+          !('op_schedule' in request.resource.data) || 
+          (
+            // 2. Validate Morning: Ignore if missing, ignore if disabled, otherwise enforce capacity > 0
+            (!('morning' in request.resource.data.op_schedule) || 
+             !request.resource.data.op_schedule.morning.enabled || 
+             request.resource.data.op_schedule.morning.capacity > 0) 
+            &&
+            // 3. Validate Evening: Ignore if missing, ignore if disabled, otherwise enforce capacity > 0
+            (!('evening' in request.resource.data.op_schedule) || 
+             !request.resource.data.op_schedule.evening.enabled || 
+             request.resource.data.op_schedule.evening.capacity > 0)
+          )
+        );
     }
   }
 }

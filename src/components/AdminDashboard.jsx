@@ -1,17 +1,15 @@
 import { useState, useEffect } from 'react';
 import { collection, addDoc, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Building2, Stethoscope, Users, Activity, PlusCircle, CalendarDays, Clock } from 'lucide-react';
+import { Building2, PlusCircle, CalendarDays, Clock } from 'lucide-react';
 
 export default function AdminDashboard() {
   const [departments, setDepartments] = useState([]);
   const [doctors, setDoctors] = useState([]);
-  const [queueCount, setQueueCount] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
 
   const [newDept, setNewDept] = useState('');
   
-  // The Upgraded Enterprise Schedule State
   const [newDoc, setNewDoc] = useState({ 
     name: '', 
     department: '', 
@@ -28,11 +26,11 @@ export default function AdminDashboard() {
     { value: 0, label: 'Sun' }
   ];
 
+  // CLEANUP: Removed the unused queueCount subscription that was wasting Firebase reads
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => setDepartments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
     const unsubDocs = onSnapshot(collection(db, "doctors"), (snap) => setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-    const unsubQueue = onSnapshot(collection(db, "today_queue"), (snap) => setQueueCount(snap.docs.length));
-    return () => { unsubDepts(); unsubDocs(); unsubQueue(); };
+    return () => { unsubDepts(); unsubDocs(); };
   }, []);
 
   const handleAddDept = async (e) => {
@@ -59,27 +57,26 @@ export default function AdminDashboard() {
     setIsProcessing(true);
     
     try {
-      // 1. Create the Doctor Profile with Exact OP Timings
       const docRef = await addDoc(collection(db, "doctors"), {
         name: newDoc.name,
         department: newDoc.department,
         current_room: newDoc.roomName || "Please ask reception",
         active: true,
         available_days: newDoc.availableDays,
-        // Save the dynamic OP configurations
         op_schedule: {
           morning: newDoc.morningOP,
           evening: newDoc.eveningOP
         }
       });
 
-      // 2. Initialize Queue Engine
       await setDoc(doc(db, "doctor_queues", docRef.id), {
+        baseline_average: 5,
         daily_bookings: {}
       });
 
+      // CLEANUP: Force department to empty string so it doesn't accidentally auto-assign
       setNewDoc({ 
-        name: '', department: departments[0]?.name || '', roomName: '', 
+        name: '', department: '', roomName: '', 
         availableDays: [1, 2, 3, 4, 5], 
         morningOP: { enabled: true, startTime: '09:00', capacity: 20 }, 
         eveningOP: { enabled: true, startTime: '17:00', capacity: 20 } 

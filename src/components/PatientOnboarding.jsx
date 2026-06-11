@@ -30,6 +30,7 @@ export default function PatientOnboarding() {
   const [doctors, setDoctors] = useState([]);
   const [activeDocProfile, setActiveDocProfile] = useState(null);
 
+  // 1. Initialize Recaptcha & Default Date
   useEffect(() => {
     if (!window.recaptchaVerifier) {
       window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
@@ -38,45 +39,77 @@ export default function PatientOnboarding() {
     setBookingDate(today);
   }, []);
 
+  // 2. Fetch Organizations & Initial Sync
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => {
       const depts = snap.docs.map(doc => doc.data().name);
       setDepartments(depts);
       if (depts.length > 0 && !selectedDept) setSelectedDept(depts[0]);
     });
+    
     const unsubDocs = onSnapshot(collection(db, "doctors"), (snap) => {
-      setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const docsList = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setDoctors(docsList);
     });
+    
     return () => { unsubDepts(); unsubDocs(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 3. Initial Load: Auto-select first available doctor when data arrives
   useEffect(() => {
-    const availableDocs = doctors.filter(d => d.department === selectedDept);
+    if (!selectedDoctor && doctors.length > 0 && selectedDept) {
+      const availableDocs = doctors.filter(d => d.department === selectedDept);
+      if (availableDocs.length > 0) {
+        const firstDoc = availableDocs[0];
+        setSelectedDoctor(firstDoc.id);
+        setActiveDocProfile(firstDoc);
+        
+        const hasMorning = firstDoc.op_schedule?.morning?.enabled;
+        const hasEvening = firstDoc.op_schedule?.evening?.enabled;
+        if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      }
+    }
+  }, [doctors, selectedDept, selectedDoctor]);
+
+  // --- EXPLICIT UI EVENT HANDLERS (Replaces buggy useEffects) ---
+
+  const handleDeptChange = (e) => {
+    const newDept = e.target.value;
+    setSelectedDept(newDept);
+    
+    const availableDocs = doctors.filter(d => d.department === newDept);
     if (availableDocs.length > 0) {
-      setSelectedDoctor(availableDocs[0].id);
+      const firstDoc = availableDocs[0];
+      setSelectedDoctor(firstDoc.id);
+      setActiveDocProfile(firstDoc);
+      
+      const hasMorning = firstDoc.op_schedule?.morning?.enabled;
+      const hasEvening = firstDoc.op_schedule?.evening?.enabled;
+      if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      else if (hasMorning && !hasEvening) setSessionBlock('Morning');
     } else {
       setSelectedDoctor('');
       setActiveDocProfile(null);
     }
-  }, [selectedDept, doctors]);
+  };
 
-  // SMART OP SCHEDULE: Update Profile & Auto-select available block
-  useEffect(() => {
-    if (selectedDoctor) {
-      const docProfile = doctors.find(d => d.id === selectedDoctor);
-      setActiveDocProfile(docProfile);
-      
-      // If Morning isn't enabled but Evening is, auto-switch to Evening
-      if (docProfile?.op_schedule) {
-        if (!docProfile.op_schedule.morning.enabled && docProfile.op_schedule.evening.enabled) {
-          setSessionBlock('Evening');
-        } else if (docProfile.op_schedule.morning.enabled) {
-          setSessionBlock('Morning');
-        }
-      }
+  const handleDoctorChange = (e) => {
+    const docId = e.target.value;
+    setSelectedDoctor(docId);
+    
+    const docProfile = doctors.find(d => d.id === docId);
+    setActiveDocProfile(docProfile || null);
+    
+    if (docProfile) {
+      const hasMorning = docProfile.op_schedule?.morning?.enabled;
+      const hasEvening = docProfile.op_schedule?.evening?.enabled;
+      if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      else if (hasMorning && !hasEvening) setSessionBlock('Morning');
     }
-  }, [selectedDoctor, doctors]);
+  };
+
+  // --- AUTH & BOOKING ACTIONS ---
 
   const formatAvailableDays = (daysArray) => {
     if (!daysArray || daysArray.length === 0) return "Not Scheduled";
@@ -125,7 +158,6 @@ export default function PatientOnboarding() {
     const selectedDateObj = new Date(year, month - 1, day);
     const dayOfWeek = selectedDateObj.getDay();
 
-    // 1. Validate Working Day
     if (!activeDocProfile.available_days?.includes(dayOfWeek)) {
       alert(`Dr. ${activeDocProfile.name} does not consult on ${selectedDateObj.toLocaleDateString('en-US', {weekday: 'long'})}s.\nAvailable: ${formatAvailableDays(activeDocProfile.available_days)}`);
       setIsProcessing(false);
@@ -141,12 +173,10 @@ export default function PatientOnboarding() {
         
         const queueData = queueSnap.data();
         
-        // 2. Validate Specific Session Capacity (e.g., Morning vs Evening) with Safe Fallbacks!
         const sessionConfig = getSessionConfig(activeDocProfile, sessionBlock);
-            
-        const maxCapacity = sessionConfig?.capacity || 20; // Safely defaults to 20 if missing
+        const maxCapacity = sessionConfig?.capacity || 20; 
         
-        const blockKey = getSessionKey(bookingDate, sessionBlock); // e.g., "2023-10-25_Morning"
+        const blockKey = getSessionKey(bookingDate, sessionBlock); 
         const dailyBookingsMap = queueData.daily_bookings || {};
         const sessionState = createSessionState(dailyBookingsMap[blockKey], maxCapacity);
         const blockCount = sessionState.last_token;
@@ -281,14 +311,16 @@ export default function PatientOnboarding() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Stethoscope size={14} className="text-blue-500" /> Department</label>
-                  <select required value={selectedDept} onChange={(e) => setSelectedDept(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                  {/* EXPLICIT HANDLER ATTACHED */}
+                  <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
                     {departments.length === 0 && <option value="">No Departments setup</option>}
                     {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Assign Practitioner</label>
-                  <select required value={selectedDoctor} onChange={(e) => setSelectedDoctor(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                  {/* EXPLICIT HANDLER ATTACHED */}
+                  <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
                     {doctors.filter(d => d.department === selectedDept).length === 0 && <option value="">No Doctors</option>}
                     {doctors.filter(doc => doc.department === selectedDept).map((doc) => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
                   </select>

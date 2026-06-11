@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, runTransaction } from 'firebase/firestore';
 import { db } from '../firebase';
-import { UserPlus, User, Activity, Stethoscope, CheckCircle, Clock, AlertCircle, CalendarDays, QrCode, Copy, Check } from 'lucide-react';
+import { UserPlus, User, Stethoscope, CheckCircle, Clock, CalendarDays, QrCode, Copy, Check } from 'lucide-react';
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
-import { QRCodeSVG } from 'qrcode.react'; // NEW: QR Library
+import { QRCodeSVG } from 'qrcode.react';
 
 export default function ReceptionDesk() {
   // --- UI & NAVIGATION STATES ---
@@ -11,7 +11,7 @@ export default function ReceptionDesk() {
 
   // --- DATA STATES ---
   const [bookedPatients, setBookedPatients] = useState([]);
-  const [futureBookings, setFutureBookings] = useState([]); // NEW: Future Bookings
+  const [futureBookings, setFutureBookings] = useState([]);
 
   // --- WALK-IN STATES ---
   const [patientName, setPatientName] = useState('');
@@ -22,7 +22,7 @@ export default function ReceptionDesk() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   // --- HANDOFF STATES ---
-  const [generatedTracker, setGeneratedTracker] = useState(null); // { token: 12, url: "...", name: "..." }
+  const [generatedTracker, setGeneratedTracker] = useState(null); 
   const [copied, setCopied] = useState(false);
 
   const [departments, setDepartments] = useState([]);
@@ -43,13 +43,13 @@ export default function ReceptionDesk() {
     return () => unsub();
   }, []);
 
-  // 2. NEW: Fetch Future Bookings Directory
+  // 2. Fetch Future Bookings Directory
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0];
     const q = query(
       collection(db, "today_queue"), 
       where("status", "==", "booked"),
-      where("appointment_date", ">", today) // Get everything strictly after today
+      where("appointment_date", ">", today) 
     );
     const unsub = onSnapshot(q, (snap) => {
       setFutureBookings(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -57,7 +57,7 @@ export default function ReceptionDesk() {
     return () => unsub();
   }, []);
 
-  // 3. Fetch Organization Data
+  // 3. Fetch Organization Data & Initial Load
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => {
       const depts = snap.docs.map(doc => doc.data().name);
@@ -71,25 +71,65 @@ export default function ReceptionDesk() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 4. Auto-update Walk-in Doctor selection
+  // 4. Initial sync of Doctor when data first loads
   useEffect(() => {
-    const availableDocs = doctors.filter(d => d.department === selectedDept);
+    if (!selectedDoctor) {
+      const availableDocs = doctors.filter(d => d.department === selectedDept);
+      if (availableDocs.length > 0) {
+        setSelectedDoctor(availableDocs[0].id);
+        setActiveDocProfile(availableDocs[0]);
+        
+        // Safely set initial session
+        const hasMorning = availableDocs[0].op_schedule?.morning?.enabled;
+        const hasEvening = availableDocs[0].op_schedule?.evening?.enabled;
+        if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      }
+    }
+  }, [selectedDept, doctors, selectedDoctor]);
+
+
+  // --- EXPLICIT UI EVENT HANDLERS (Fixes the Session State Bug) ---
+  
+  const handleDeptChange = (e) => {
+    const newDept = e.target.value;
+    setSelectedDept(newDept);
+    
+    const availableDocs = doctors.filter(d => d.department === newDept);
     if (availableDocs.length > 0) {
-      setSelectedDoctor(availableDocs[0].id);
-      setActiveDocProfile(availableDocs[0]);
+      const firstDoc = availableDocs[0];
+      setSelectedDoctor(firstDoc.id);
+      setActiveDocProfile(firstDoc);
+      
+      // Force correct session block state
+      const hasMorning = firstDoc.op_schedule?.morning?.enabled;
+      const hasEvening = firstDoc.op_schedule?.evening?.enabled;
+      if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      else if (hasMorning && !hasEvening) setSessionBlock('Morning');
     } else {
       setSelectedDoctor('');
       setActiveDocProfile(null);
     }
-  }, [selectedDept, doctors]);
+  };
 
-  useEffect(() => {
-    if (selectedDoctor) setActiveDocProfile(doctors.find(d => d.id === selectedDoctor));
-  }, [selectedDoctor, doctors]);
+  const handleDoctorChange = (e) => {
+    const docId = e.target.value;
+    setSelectedDoctor(docId);
+    
+    const docProfile = doctors.find(d => d.id === docId);
+    setActiveDocProfile(docProfile || null);
+    
+    // Force correct session block state when manually changing doctors
+    if (docProfile) {
+      const hasMorning = docProfile.op_schedule?.morning?.enabled;
+      const hasEvening = docProfile.op_schedule?.evening?.enabled;
+      if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      else if (hasMorning && !hasEvening) setSessionBlock('Morning');
+    }
+  };
+
 
   // --- ACTIONS ---
 
-  // Action A: Verify Online Booking (Booked -> Arrived)
   const markAsArrived = async (tokenId) => {
     try {
       await updateDoc(doc(db, "today_queue", tokenId), {
@@ -101,7 +141,6 @@ export default function ReceptionDesk() {
     }
   };
 
-  // Action B: Process New Walk-In (Using your Enterprise Session Logic)
   const handleWalkIn = async (e) => {
     e.preventDefault();
     if (!patientName || phone.length !== 10 || !selectedDoctor || !activeDocProfile) return alert("Fill all required fields.");
@@ -117,7 +156,6 @@ export default function ReceptionDesk() {
         
         const queueData = queueSnap.data();
 
-        // Enterprise Capacity Check for Walk-ins
         const blockKey = getSessionKey(today, sessionBlock);
         const dailyBookingsMap = queueData.daily_bookings || {};
         
@@ -135,13 +173,11 @@ export default function ReceptionDesk() {
           capacity: maxCapacity
         };
 
-        // 1. Create Patient Profile Auto-ID
         const newPatientRef = doc(collection(db, "patients"));
         transaction.set(newPatientRef, {
           full_name: patientName, phone_number: "+91" + phone, registration_type: "walk-in", last_updated: new Date()
         });
 
-        // 2. Add to Queue as ARRIVED immediately
         const queueRef = doc(collection(db, "today_queue"));
         const secureTrackerId = queueRef.id;
 
@@ -155,14 +191,12 @@ export default function ReceptionDesk() {
           booking_type: "walk-in", penalty_count: 0
         });
 
-        // 3. Update this date/session counter only.
         transaction.update(doctorQueueRef, { 
           daily_bookings: { ...dailyBookingsMap, [blockKey]: nextSessionState }
         });
 
         return { nextToken, secureTrackerId };
       }).then((result) => {
-        // NEW: TRIGGER THE QR HANDOFF SCREEN INSTEAD OF JUST AN ALERT
         const trackerUrl = `${window.location.origin}/tracker/${result.secureTrackerId}`;
         setGeneratedTracker({ 
           token: result.nextToken, 
@@ -180,7 +214,6 @@ export default function ReceptionDesk() {
     setIsProcessing(false);
   };
 
-  // NEW: Copy to Clipboard utility for Walk-ins
   const copyToClipboard = () => {
     if (generatedTracker) {
       navigator.clipboard.writeText(generatedTracker.url);
@@ -191,7 +224,7 @@ export default function ReceptionDesk() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
-      <div className="max-w-5xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto space-y-6">
         
         {/* Header & Navigation Tabs */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
@@ -201,7 +234,7 @@ export default function ReceptionDesk() {
             </div>
             <div>
               <h1 className="text-3xl font-black text-slate-900 tracking-tight">Reception Desk</h1>
-              <p className="text-slate-500 font-medium">Outpatient Queue Management</p>
+              <p className="text-slate-500 font-medium">Verify online arrivals & Register walk-ins</p>
             </div>
           </div>
 
@@ -229,7 +262,7 @@ export default function ReceptionDesk() {
                 <CheckCircle size={32} className="opacity-50"/> No pending arrivals right now.
               </div>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-slate-100 h-96 overflow-y-auto">
                 {bookedPatients.map(patient => (
                   <div key={patient.id} className="p-5 flex items-center justify-between hover:bg-slate-50 transition-colors">
                     <div>
@@ -261,7 +294,7 @@ export default function ReceptionDesk() {
             {futureBookings.length === 0 ? (
               <div className="p-10 text-center text-slate-400 font-bold">No future bookings found.</div>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-slate-100 h-96 overflow-y-auto">
                 {futureBookings.map(patient => (
                   <div key={patient.id} className="p-5 flex items-center justify-between hover:bg-slate-50">
                     <div>
@@ -283,7 +316,6 @@ export default function ReceptionDesk() {
         {activeTab === 'walkin' && (
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden max-w-2xl mx-auto">
             
-            {/* SUCCESS STATE: THE HANDOFF SCREEN */}
             {generatedTracker ? (
               <div className="p-10 text-center space-y-6">
                 <div className="w-20 h-20 bg-emerald-100 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-2">
@@ -309,7 +341,6 @@ export default function ReceptionDesk() {
                 </div>
               </div>
             ) : (
-              /* FORM STATE */
               <form onSubmit={handleWalkIn} className="p-8 space-y-5">
                 <div className="p-5 border-b border-slate-100 bg-slate-50/50 -mx-8 -mt-8 mb-6">
                   <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><UserPlus className="text-emerald-500" size={20}/> New Walk-In</h2>
@@ -335,18 +366,21 @@ export default function ReceptionDesk() {
                 <div className="space-y-4 bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100/50">
                   <div>
                     <label className="flex text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 items-center gap-1"><Stethoscope size={14} className="text-emerald-500"/> Department</label>
-                    <select required value={selectedDept} onChange={(e) => setSelectedDept(e.target.value)} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
+                    {/* BIND THE NEW HANDLER HERE */}
+                    <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Assign Doctor</label>
-                    <select required value={selectedDoctor} onChange={(e) => setSelectedDoctor(e.target.value)} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
+                    {/* BIND THE NEW HANDLER HERE */}
+                    <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {doctors.filter(d => d.department === selectedDept).map(doc => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Session Block</label>
+                    {/* This dropdown safely displays only what is available, and obeys the state set by the handlers above */}
                     <select required value={sessionBlock} onChange={(e) => setSessionBlock(e.target.value)} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning Session</option>}
                       {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening Session</option>}

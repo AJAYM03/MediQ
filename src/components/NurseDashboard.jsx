@@ -7,6 +7,8 @@ import { createSessionState, getSessionKey } from '../utils/queueSession';
 export default function NurseDashboard() {
   const [doctors, setDoctors] = useState([]);
   const [selectedDoctorId, setSelectedDoctorId] = useState('');
+  const [activeDocProfile, setActiveDocProfile] = useState(null); // NEW: Track specific doctor details
+  
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
   const [sessionBlock, setSessionBlock] = useState('Morning');
   
@@ -14,8 +16,9 @@ export default function NurseDashboard() {
   const [activePatient, setActivePatient] = useState(null); 
   const [waitingQueue, setWaitingQueue] = useState([]); 
   
-  // THE MISSING PIECE: The Math Engine Tracker
+  // The Math Engine Tracker
   const [queueEngine, setQueueEngine] = useState(null);
+  
   const sessionKey = getSessionKey(sessionDate, sessionBlock);
   const sessionState = createSessionState(queueEngine?.daily_bookings?.[sessionKey]);
 
@@ -38,13 +41,13 @@ export default function NurseDashboard() {
 
   // 3. Fetch the Tickets & State Machine
   useEffect(() => {
-    if (!selectedDoctorId) return;
+    if (!selectedDoctorId || !sessionKey) return;
     
+    // AUDIT FIX: Using session_key directly for bulletproof isolation
     const q = query(
       collection(db, "today_queue"), 
       where("doctor_id", "==", selectedDoctorId),
-      where("appointment_date", "==", sessionDate),
-      where("session_block", "==", sessionBlock)
+      where("session_key", "==", sessionKey) 
     );
     
     const unsub = onSnapshot(q, (snap) => {
@@ -54,14 +57,38 @@ export default function NurseDashboard() {
       setActivePatient(current || null);
 
       let waiting = allTickets.filter(t => t.status === "arrived");
+      
+      // AUDIT FIX: The Virtual Weight Penalty System
       waiting.sort((a, b) => {
-        if (a.penalty_count !== b.penalty_count) return a.penalty_count - b.penalty_count;
-        return a.token_number - b.token_number;
+        const PENALTY_WEIGHT = 3; // A skip drops them 3 spots mathematically
+        const aVirtualToken = a.token_number + (a.penalty_count * PENALTY_WEIGHT);
+        const bVirtualToken = b.token_number + (b.penalty_count * PENALTY_WEIGHT);
+        
+        return aVirtualToken - bVirtualToken;
       });
+      
       setWaitingQueue(waiting);
     });
     return () => unsub();
-  }, [selectedDoctorId, sessionDate, sessionBlock]);
+  }, [selectedDoctorId, sessionKey]);
+
+  // --- ACTIONS & HANDLERS ---
+
+  // AUDIT FIX: Auto-sync session block when Nurse changes doctor
+  const handleDoctorChange = (e) => {
+    const docId = e.target.value;
+    setSelectedDoctorId(docId);
+    
+    const docProfile = doctors.find(d => d.id === docId);
+    setActiveDocProfile(docProfile || null);
+    
+    if (docProfile) {
+      const hasMorning = docProfile.op_schedule?.morning?.enabled;
+      const hasEvening = docProfile.op_schedule?.evening?.enabled;
+      if (!hasMorning && hasEvening) setSessionBlock('Evening');
+      else if (hasMorning && !hasEvening) setSessionBlock('Morning');
+    }
+  };
 
   const getQueueRef = () => doc(db, "doctor_queues", selectedDoctorId);
 
@@ -73,16 +100,12 @@ export default function NurseDashboard() {
     await updateDoc(getQueueRef(), updates);
   };
 
-  // --- RESTORED MATHEMATICAL STATE ACTIONS ---
-
-  // Action A: They walked in the room. Start the hidden timer.
+  // Action A: They walked in the room. Start the timer.
   const handleStartConsult = async () => {
     if (!activePatient) return;
     
-    // 1. Update ticket UI
     await updateDoc(doc(db, "today_queue", activePatient.id), { status: "in_consultation" });
     
-    // 2. Start the clock on the Engine
     await updateSessionState({
       last_consultation_start_time: serverTimestamp(),
       session_active: true,
@@ -95,35 +118,30 @@ export default function NurseDashboard() {
     let newAverage = sessionState.rolling_average || 5;
     let newDurations = sessionState.recent_durations || [];
 
-    // 1. If someone was in the room, finish them and calculate duration
     if (activePatient) {
       await updateDoc(doc(db, "today_queue", activePatient.id), { status: "completed" });
       
       if (sessionState.last_consultation_start_time) {
         const lastCallDate = sessionState.last_consultation_start_time.toDate();
-        // Calculate mins passed (Min 1, Max 30 to prevent crazy outliers)
         const durationMins = Math.max(1, Math.min(30, Number(((new Date() - lastCallDate) / 60000).toFixed(1))));
         
-        newDurations = [...newDurations, durationMins].slice(-5); // Keep last 5
+        newDurations = [...newDurations, durationMins].slice(-5); 
         newAverage = Number((newDurations.reduce((a, b) => a + b, 0) / newDurations.length).toFixed(1));
       }
     }
 
-    // 2. Call the next patient in line
     if (waitingQueue.length > 0) {
       const nextUp = waitingQueue[0];
       await updateDoc(doc(db, "today_queue", nextUp.id), { status: "called" });
       
-      // 3. Update the Math Engine so Trackers recalculate!
       await updateSessionState({
-        current_serving_token: nextUp.token_number, // Tells waiting patients who is inside!
+        current_serving_token: nextUp.token_number, 
         rolling_average: newAverage,
         recent_durations: newDurations,
         session_active: true,
         is_paused: false
       });
     } else {
-      // If no one is left, just save the final math and pause the session
       await updateSessionState({
         rolling_average: newAverage,
         recent_durations: newDurations,
@@ -135,7 +153,6 @@ export default function NurseDashboard() {
   // Action C: Skip Penalty (Kick them down the line)
   const handleSkip = async () => {
     if (!activePatient) return;
-    // Don't update the math engine time here, because no consultation actually happened!
     await updateDoc(doc(db, "today_queue", activePatient.id), { 
       status: "arrived", 
       penalty_count: activePatient.penalty_count + 1 
@@ -147,8 +164,8 @@ export default function NurseDashboard() {
       <div className="w-full max-w-lg space-y-6 mt-10">
         
         <select 
-          value={selectedDoctorId} onChange={(e) => setSelectedDoctorId(e.target.value)}
-          className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold"
+          value={selectedDoctorId} onChange={handleDoctorChange}
+          className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold cursor-pointer"
         >
           <option value="">-- Choose Doctor's Room --</option>
           {doctors.map(doc => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
@@ -159,15 +176,17 @@ export default function NurseDashboard() {
             type="date"
             value={sessionDate}
             onChange={(e) => setSessionDate(e.target.value)}
-            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold"
+            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold cursor-pointer"
           />
+          {/* AUDIT FIX: Dynamically render options based on actual availability */}
           <select
             value={sessionBlock}
             onChange={(e) => setSessionBlock(e.target.value)}
-            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold"
+            className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold cursor-pointer"
           >
-            <option value="Morning">Morning</option>
-            <option value="Evening">Evening</option>
+            {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning</option>}
+            {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening</option>}
+            {!activeDocProfile && <option value="Morning">Morning</option>}
           </select>
         </div>
 
@@ -176,9 +195,8 @@ export default function NurseDashboard() {
             {/* Active Display Panel */}
             <div className="bg-white rounded-3xl p-8 text-center shadow-xl relative overflow-hidden">
               
-              {/* Live Math Stats Indicator */}
               <div className="absolute top-4 left-4 right-4 flex justify-between text-xs font-bold text-gray-400">
-                <span className="flex items-center gap-1"><Activity size={14}/> Avg: {sessionState.rolling_average}m</span>
+                <span className="flex items-center gap-1"><Activity size={14}/> Avg: {sessionState.rolling_average || 5}m</span>
                 <span>Max: {sessionState.capacity || 20}</span>
               </div>
 
@@ -203,7 +221,7 @@ export default function NurseDashboard() {
               
               <button 
                 onClick={handleCallNext} disabled={waitingQueue.length === 0 && !activePatient}
-                className="w-full mt-4 bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl flex justify-center gap-2"
+                className="w-full mt-4 bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl flex justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {activePatient ? "Finish Consult & Call Next" : "Call Next Patient"} <ArrowRight size={20}/>
               </button>
