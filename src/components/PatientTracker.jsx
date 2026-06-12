@@ -94,18 +94,23 @@ export default function PatientTracker() {
     // MODE 1: LIVE SESSION
     if (sessionState.session_active) {
       liveAvg = sessionState.rolling_average || 5;
-      let currentRemainingMins = liveAvg;
       
-      if (sessionState.last_consultation_start_time) {
+      // THE FIX: Check if someone is actually sitting in the room
+      const hasActiveConsultation = sessionState.last_consultation_start_time != null;
+      let currentRemainingMins = 0; // Default to 0 for an empty room
+
+      if (hasActiveConsultation) {
         const startedAt = sessionState.last_consultation_start_time.toDate();
         currentElapsed = Math.floor(Math.max(0, (clockTick - startedAt.getTime()) / 60000));
         currentRemainingMins = Math.max(0, liveAvg - currentElapsed);
       }
 
+      // MATH: Wait time only adds room time if someone is actually in it
       const totalWaitMins = currentRemainingMins + (lobbyIndex * liveAvg);
       targetDate = new Date(clockTick + (totalWaitMins * 60000));
 
-      displayAhead = lobbyIndex + 1;
+      // UI: Display count only adds +1 if someone is actually in the room
+      displayAhead = lobbyIndex + (hasActiveConsultation ? 1 : 0);
 
     } 
     // MODE 2: PRE-SESSION / PAUSED SESSION
