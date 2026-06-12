@@ -135,6 +135,16 @@ export default function PatientTracker() {
     
     if (minutesRemaining <= 0) countdownText = "Doctor Running Behind Schedule";
 
+    // UX POLISH: Contextual overrides so the text always makes logical sense
+    if (ticket.status === 'called') {
+      countdownText = "Proceed to the room";
+    } else if (ticket.status === 'in_consultation') {
+      countdownText = "Consultation in progress";
+    } else if (sessionState.session_active && !sessionState.last_consultation_start_time && minutesRemaining <= 0) {
+      // If the timer is paused but the session is live, they are in the hallway!
+      countdownText = "Waiting for next patient to enter";
+    }
+
     return {
       clockTime: targetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       countdown: countdownText,
@@ -143,6 +153,7 @@ export default function PatientTracker() {
       currentElapsed: currentElapsed
     };
   };
+  
 
   const getStateUI = () => {
     switch (ticket?.status) {

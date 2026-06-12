@@ -35,8 +35,8 @@ export default function PatientOnboarding() {
     if (!window.recaptchaVerifier) {
       window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
     }
-    const today = new Date().toISOString().split('T')[0];
-    setBookingDate(today);
+    const getLocalDate = () => new Date().toLocaleDateString('en-CA');
+    setBookingDate(getLocalDate());
   }, []);
 
   // 2. Fetch Organizations & Initial Sync

@@ -31,7 +31,7 @@ export default function ReceptionDesk() {
 
   // 1. Fetch Today's Online Bookings
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD
     const q = query(
       collection(db, "today_queue"), 
       where("status", "==", "booked"),
@@ -45,7 +45,7 @@ export default function ReceptionDesk() {
 
   // 2. Fetch Future Bookings Directory
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD 
     const q = query(
       collection(db, "today_queue"), 
       where("status", "==", "booked"),
@@ -147,7 +147,7 @@ export default function ReceptionDesk() {
     setIsProcessing(true);
 
     const doctorQueueRef = doc(db, "doctor_queues", selectedDoctor);
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD
 
     try {
       await runTransaction(db, async (transaction) => {

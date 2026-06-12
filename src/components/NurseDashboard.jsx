@@ -7,22 +7,18 @@ import { createSessionState, getSessionKey } from '../utils/queueSession';
 export default function NurseDashboard() {
   const [doctors, setDoctors] = useState([]);
   const [selectedDoctorId, setSelectedDoctorId] = useState('');
-  const [activeDocProfile, setActiveDocProfile] = useState(null); // NEW: Track specific doctor details
+  const [activeDocProfile, setActiveDocProfile] = useState(null);
   
   const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
   const [sessionBlock, setSessionBlock] = useState('Morning');
   
-  // The State Machine Trackers
   const [activePatient, setActivePatient] = useState(null); 
   const [waitingQueue, setWaitingQueue] = useState([]); 
-  
-  // The Math Engine Tracker
   const [queueEngine, setQueueEngine] = useState(null);
   
   const sessionKey = getSessionKey(sessionDate, sessionBlock);
   const sessionState = createSessionState(queueEngine?.daily_bookings?.[sessionKey]);
 
-  // 1. Fetch Doctors list
   useEffect(() => {
     const unsubDocs = onSnapshot(collection(db, "doctors"), (snap) => {
       setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -30,7 +26,6 @@ export default function NurseDashboard() {
     return () => unsubDocs();
   }, []);
 
-  // 2. Fetch the Math Engine (doctor_queues)
   useEffect(() => {
     if (!selectedDoctorId) return;
     const unsub = onSnapshot(doc(db, "doctor_queues", selectedDoctorId), (snap) => {
@@ -39,11 +34,9 @@ export default function NurseDashboard() {
     return () => unsub();
   }, [selectedDoctorId]);
 
-  // 3. Fetch the Tickets & State Machine
   useEffect(() => {
     if (!selectedDoctorId || !sessionKey) return;
     
-    // AUDIT FIX: Using session_key directly for bulletproof isolation
     const q = query(
       collection(db, "today_queue"), 
       where("doctor_id", "==", selectedDoctorId),
@@ -58,12 +51,10 @@ export default function NurseDashboard() {
 
       let waiting = allTickets.filter(t => t.status === "arrived");
       
-      // AUDIT FIX: The Virtual Weight Penalty System
       waiting.sort((a, b) => {
-        const PENALTY_WEIGHT = 3; // A skip drops them 3 spots mathematically
+        const PENALTY_WEIGHT = 3; 
         const aVirtualToken = a.token_number + (a.penalty_count * PENALTY_WEIGHT);
         const bVirtualToken = b.token_number + (b.penalty_count * PENALTY_WEIGHT);
-        
         return aVirtualToken - bVirtualToken;
       });
       
@@ -72,9 +63,6 @@ export default function NurseDashboard() {
     return () => unsub();
   }, [selectedDoctorId, sessionKey]);
 
-  // --- ACTIONS & HANDLERS ---
-
-  // AUDIT FIX: Auto-sync session block when Nurse changes doctor
   const handleDoctorChange = (e) => {
     const docId = e.target.value;
     setSelectedDoctorId(docId);
@@ -100,7 +88,6 @@ export default function NurseDashboard() {
     await updateDoc(getQueueRef(), updates);
   };
 
-  // Action A: They walked in the room. Start the timer.
   const handleStartConsult = async () => {
     if (!activePatient) return;
     
@@ -113,7 +100,6 @@ export default function NurseDashboard() {
     });
   };
 
-  // Action B: Finish current, calculate math, call next.
   const handleCallNext = async () => {
     let newAverage = sessionState.rolling_average || 5;
     let newDurations = sessionState.recent_durations || [];
@@ -138,29 +124,31 @@ export default function NurseDashboard() {
         current_serving_token: nextUp.token_number, 
         rolling_average: newAverage,
         recent_durations: newDurations,
-        session_active: true,
+        session_active: true,               // KEEP TRUE: Protects the rolling average
+        last_consultation_start_time: null, // THE FIX: Kills the ghost timer
         is_paused: false
       });
     } else {
       await updateSessionState({
         rolling_average: newAverage,
         recent_durations: newDurations,
-        session_active: false
+        session_active: false,
+        last_consultation_start_time: null, // Clear timer for empty room
+        is_paused: true
       });
     }
   };
 
-  // Action C: Skip Penalty (Kick them down the line)
   const handleSkip = async () => {
     if (!activePatient) return;
     await updateDoc(doc(db, "today_queue", activePatient.id), { 
       status: "arrived", 
       penalty_count: activePatient.penalty_count + 1 
     });
-
+    
     await updateSessionState({
       session_active: false,
-      is_paused: false
+      is_paused: true
     });
   };
 
@@ -183,7 +171,6 @@ export default function NurseDashboard() {
             onChange={(e) => setSessionDate(e.target.value)}
             className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl px-4 py-3 font-bold cursor-pointer"
           />
-          {/* AUDIT FIX: Dynamically render options based on actual availability */}
           <select
             value={sessionBlock}
             onChange={(e) => setSessionBlock(e.target.value)}
@@ -197,15 +184,16 @@ export default function NurseDashboard() {
 
         {selectedDoctorId && queueEngine && (
           <div className="space-y-4">
+            
             {/* Active Display Panel */}
             <div className="bg-white rounded-3xl p-8 text-center shadow-xl relative overflow-hidden">
-              
               <div className="absolute top-4 left-4 right-4 flex justify-between text-xs font-bold text-gray-400">
                 <span className="flex items-center gap-1"><Activity size={14}/> Avg: {sessionState.rolling_average || 5}m</span>
                 <span>Max: {sessionState.capacity || 20}</span>
               </div>
 
               <p className="text-gray-500 font-bold uppercase mb-2 mt-4">Current Status</p>
+              
               {activePatient ? (
                 <>
                   <div className="text-6xl font-black text-gray-900 mb-2">#{activePatient.token_number}</div>
@@ -213,23 +201,37 @@ export default function NurseDashboard() {
                     {activePatient.status === 'in_consultation' ? 'IN CONSULTATION' : 'CALLED TO ROOM'}
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-3">
-                    {activePatient.status === 'called' && (
-                      <button onClick={handleStartConsult} className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl flex justify-center gap-2"><PlayCircle size={20}/> Walked In</button>
-                    )}
-                    <button onClick={handleSkip} className="bg-orange-100 hover:bg-orange-200 text-orange-700 font-bold py-3 rounded-xl flex justify-center gap-2"><SkipForward size={20}/> Absent / Skip</button>
-                  </div>
+                  {/* ENFORCED UI WORKFLOW */}
+                  {activePatient.status === 'called' && (
+                    <div className="grid grid-cols-2 gap-3 mt-4">
+                      <button onClick={handleStartConsult} className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 text-lg">
+                        <PlayCircle size={24}/> Walked In
+                      </button>
+                      <button onClick={handleSkip} className="bg-orange-100 hover:bg-orange-200 text-orange-700 font-bold py-4 rounded-xl flex justify-center items-center gap-2 text-lg">
+                        <SkipForward size={24}/> Absent / Skip
+                      </button>
+                    </div>
+                  )}
+
+                  {activePatient.status === 'in_consultation' && (
+                    <div className="space-y-3 mt-4">
+                      <button onClick={handleCallNext} className="w-full bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 text-lg">
+                        Finish Consult & Call Next <ArrowRight size={24}/>
+                      </button>
+                    </div>
+                  )}
                 </>
               ) : (
-                <div className="py-10 text-gray-400 font-medium">Room is empty. Call next patient.</div>
+                <>
+                  <div className="py-10 text-gray-400 font-medium">Room is empty. Call next patient.</div>
+                  <button 
+                    onClick={handleCallNext} disabled={waitingQueue.length === 0}
+                    className="w-full mt-4 bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl flex justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Call Next Patient <ArrowRight size={20}/>
+                  </button>
+                </>
               )}
-              
-              <button 
-                onClick={handleCallNext} disabled={waitingQueue.length === 0 && !activePatient}
-                className="w-full mt-4 bg-gray-900 hover:bg-black text-white font-bold py-4 rounded-xl flex justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {activePatient ? "Finish Consult & Call Next" : "Call Next Patient"} <ArrowRight size={20}/>
-              </button>
             </div>
 
             {/* Live Active Queue */}
@@ -245,6 +247,7 @@ export default function NurseDashboard() {
                 ))}
               </div>
             </div>
+            
           </div>
         )}
       </div>
