@@ -4,16 +4,15 @@ import { db } from '../firebase';
 import { UserPlus, User, Stethoscope, CheckCircle, Clock, CalendarDays, QrCode, Copy, Check } from 'lucide-react';
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 import { QRCodeSVG } from 'qrcode.react';
+import { getISTDateString } from '../utils/dateHelpers';
+import { validateBookingRequest } from '../utils/bookingValidation';
 
 export default function ReceptionDesk() {
-  // --- UI & NAVIGATION STATES ---
-  const [activeTab, setActiveTab] = useState('today'); // 'today', 'future', 'walkin'
+  const [activeTab, setActiveTab] = useState('today');
 
-  // --- DATA STATES ---
   const [bookedPatients, setBookedPatients] = useState([]);
   const [futureBookings, setFutureBookings] = useState([]);
 
-  // --- WALK-IN STATES ---
   const [patientName, setPatientName] = useState('');
   const [phone, setPhone] = useState('');
   const [selectedDept, setSelectedDept] = useState('');
@@ -21,7 +20,6 @@ export default function ReceptionDesk() {
   const [sessionBlock, setSessionBlock] = useState('Morning');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // --- HANDOFF STATES ---
   const [generatedTracker, setGeneratedTracker] = useState(null); 
   const [copied, setCopied] = useState(false);
 
@@ -31,7 +29,7 @@ export default function ReceptionDesk() {
 
   // 1. Fetch Today's Online Bookings
   useEffect(() => {
-    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD
+    const today = getISTDateString();
     const q = query(
       collection(db, "today_queue"), 
       where("status", "==", "booked"),
@@ -45,7 +43,7 @@ export default function ReceptionDesk() {
 
   // 2. Fetch Future Bookings Directory
   useEffect(() => {
-    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD 
+    const today = getISTDateString(); 
     const q = query(
       collection(db, "today_queue"), 
       where("status", "==", "booked"),
@@ -79,7 +77,6 @@ export default function ReceptionDesk() {
         setSelectedDoctor(availableDocs[0].id);
         setActiveDocProfile(availableDocs[0]);
         
-        // Safely set initial session
         const hasMorning = availableDocs[0].op_schedule?.morning?.enabled;
         const hasEvening = availableDocs[0].op_schedule?.evening?.enabled;
         if (!hasMorning && hasEvening) setSessionBlock('Evening');
@@ -88,7 +85,7 @@ export default function ReceptionDesk() {
   }, [selectedDept, doctors, selectedDoctor]);
 
 
-  // --- EXPLICIT UI EVENT HANDLERS (Fixes the Session State Bug) ---
+  // --- EXPLICIT UI EVENT HANDLERS ---
   
   const handleDeptChange = (e) => {
     const newDept = e.target.value;
@@ -100,7 +97,6 @@ export default function ReceptionDesk() {
       setSelectedDoctor(firstDoc.id);
       setActiveDocProfile(firstDoc);
       
-      // Force correct session block state
       const hasMorning = firstDoc.op_schedule?.morning?.enabled;
       const hasEvening = firstDoc.op_schedule?.evening?.enabled;
       if (!hasMorning && hasEvening) setSessionBlock('Evening');
@@ -118,7 +114,6 @@ export default function ReceptionDesk() {
     const docProfile = doctors.find(d => d.id === docId);
     setActiveDocProfile(docProfile || null);
     
-    // Force correct session block state when manually changing doctors
     if (docProfile) {
       const hasMorning = docProfile.op_schedule?.morning?.enabled;
       const hasEvening = docProfile.op_schedule?.evening?.enabled;
@@ -146,8 +141,17 @@ export default function ReceptionDesk() {
     if (!patientName || phone.length !== 10 || !selectedDoctor || !activeDocProfile) return alert("Fill all required fields.");
     setIsProcessing(true);
 
+    const today = getISTDateString();
+
+    // Validating before creating a walk-in token
+    const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, today, sessionBlock);
+    if (!validation.valid) {
+      alert(`Walk-In blocked: ${validation.error}`);
+      setIsProcessing(false);
+      return;
+    }
+
     const doctorQueueRef = doc(db, "doctor_queues", selectedDoctor);
-    const today = new Date().toLocaleDateString('en-CA'); // Format: YYYY-MM-DD
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -226,7 +230,6 @@ export default function ReceptionDesk() {
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
         
-        {/* Header & Navigation Tabs */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div className="flex items-center gap-4">
             <div className="bg-emerald-100 p-4 rounded-2xl text-emerald-600">
@@ -251,7 +254,6 @@ export default function ReceptionDesk() {
           </div>
         </div>
 
-        {/* TAB 1: TODAY'S ARRIVALS */}
         {activeTab === 'today' && (
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden max-w-3xl mx-auto">
             <div className="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -285,7 +287,6 @@ export default function ReceptionDesk() {
           </div>
         )}
 
-        {/* TAB 2: FUTURE BOOKINGS DIRECTORY */}
         {activeTab === 'future' && (
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden max-w-3xl mx-auto">
             <div className="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -312,7 +313,6 @@ export default function ReceptionDesk() {
           </div>
         )}
 
-        {/* TAB 3: WALK-IN REGISTRATION & QR HANDOFF */}
         {activeTab === 'walkin' && (
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden max-w-2xl mx-auto">
             
@@ -366,21 +366,18 @@ export default function ReceptionDesk() {
                 <div className="space-y-4 bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100/50">
                   <div>
                     <label className="flex text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 items-center gap-1"><Stethoscope size={14} className="text-emerald-500"/> Department</label>
-                    {/* BIND THE NEW HANDLER HERE */}
                     <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Assign Doctor</label>
-                    {/* BIND THE NEW HANDLER HERE */}
                     <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {doctors.filter(d => d.department === selectedDept).map(doc => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Session Block</label>
-                    {/* This dropdown safely displays only what is available, and obeys the state set by the handlers above */}
                     <select required value={sessionBlock} onChange={(e) => setSessionBlock(e.target.value)} className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl font-medium text-slate-800">
                       {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning Session</option>}
                       {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening Session</option>}
@@ -389,7 +386,7 @@ export default function ReceptionDesk() {
                 </div>
 
                 <button type="submit" disabled={isProcessing} className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 transition-all mt-4">
-                  <QrCode size={20} /> {isProcessing ? "Processing..." : "Generate Token & QR Tracker"}
+                  <QrCode size={20} /> {isProcessing ? "Validating..." : "Generate Token & QR Tracker"}
                 </button>
               </form>
             )}

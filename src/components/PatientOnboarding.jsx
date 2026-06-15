@@ -5,6 +5,8 @@ import { doc, getDoc, collection, runTransaction, onSnapshot, arrayUnion } from 
 import { db, auth } from '../firebase';
 import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock, AlertCircle } from 'lucide-react';
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
+import { getISTDateString } from '../utils/dateHelpers';
+import { validateBookingRequest } from '../utils/bookingValidation';
 
 export default function PatientOnboarding() {
   const navigate = useNavigate();
@@ -30,13 +32,12 @@ export default function PatientOnboarding() {
   const [doctors, setDoctors] = useState([]);
   const [activeDocProfile, setActiveDocProfile] = useState(null);
 
-  // 1. Initialize Recaptcha & Default Date
+  // 1. Initialize Recaptcha & Default Date (IST)
   useEffect(() => {
     if (!window.recaptchaVerifier) {
       window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
     }
-    const getLocalDate = () => new Date().toLocaleDateString('en-CA');
-    setBookingDate(getLocalDate());
+    setBookingDate(getISTDateString());
   }, []);
 
   // 2. Fetch Organizations & Initial Sync
@@ -72,7 +73,7 @@ export default function PatientOnboarding() {
     }
   }, [doctors, selectedDept, selectedDoctor]);
 
-  // --- EXPLICIT UI EVENT HANDLERS (Replaces buggy useEffects) ---
+  // --- EXPLICIT UI EVENT HANDLERS ---
 
   const handleDeptChange = (e) => {
     const newDept = e.target.value;
@@ -154,12 +155,11 @@ export default function PatientOnboarding() {
     
     setIsProcessing(true);
 
-    const [year, month, day] = bookingDate.split('-');
-    const selectedDateObj = new Date(year, month - 1, day);
-    const dayOfWeek = selectedDateObj.getDay();
-
-    if (!activeDocProfile.available_days?.includes(dayOfWeek)) {
-      alert(`Dr. ${activeDocProfile.name} does not consult on ${selectedDateObj.toLocaleDateString('en-US', {weekday: 'long'})}s.\nAvailable: ${formatAvailableDays(activeDocProfile.available_days)}`);
+    // Run the Universal Validation Engine BEFORE trying to hit the database
+    const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, bookingDate, sessionBlock);
+    
+    if (!validation.valid) {
+      alert(validation.error);
       setIsProcessing(false);
       return;
     }
@@ -223,12 +223,7 @@ export default function PatientOnboarding() {
     } catch (error) {
       console.error("Booking Failed:", error);
       if (error.message === 'CAPACITY_FULL') {
-        const sessionConfig = sessionBlock === 'Morning' 
-            ? activeDocProfile?.op_schedule?.morning 
-            : activeDocProfile?.op_schedule?.evening;
-        const capacityMsg = sessionConfig?.capacity || 20;
-        
-        alert(`The ${sessionBlock} session is fully booked (Max ${capacityMsg} patients). Please select another date or session.`);
+        alert("The session filled up while you were booking. Please select another slot.");
       } else {
         alert("Booking failed. Please ensure Admin has fully configured this doctor.");
       }
@@ -311,7 +306,6 @@ export default function PatientOnboarding() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Stethoscope size={14} className="text-blue-500" /> Department</label>
-                  {/* EXPLICIT HANDLER ATTACHED */}
                   <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
                     {departments.length === 0 && <option value="">No Departments setup</option>}
                     {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
@@ -319,7 +313,6 @@ export default function PatientOnboarding() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Assign Practitioner</label>
-                  {/* EXPLICIT HANDLER ATTACHED */}
                   <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
                     {doctors.filter(d => d.department === selectedDept).length === 0 && <option value="">No Doctors</option>}
                     {doctors.filter(doc => doc.department === selectedDept).map((doc) => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
@@ -339,12 +332,12 @@ export default function PatientOnboarding() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Calendar size={14} className="text-indigo-500" /> Choose Date</label>
-                  <input type="date" required min={new Date().toISOString().split('T')[0]} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+                  {/* SAFE IST DATE RESTRICTION */}
+                  <input type="date" required min={getISTDateString()} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
                 </div>
                 <div>
                   <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Clock size={14} className="text-indigo-500" /> Session Block</label>
                   <select value={sessionBlock} onChange={(e) => setSessionBlock(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
-                    {/* DYNAMICALLY HIDE DISABLED SESSIONS */}
                     {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning Session</option>}
                     {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening Session</option>}
                   </select>
@@ -353,7 +346,7 @@ export default function PatientOnboarding() {
             </div>
 
             <button type="submit" disabled={isProcessing} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2">
-              <CalendarPlus size={20} /> {isProcessing ? "Securing Token..." : "Confirm Booking & Generate ETA"}
+              <CalendarPlus size={20} /> {isProcessing ? "Validating & Securing Token..." : "Confirm Booking & Generate ETA"}
             </button>
           </form>
         )}

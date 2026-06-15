@@ -10,13 +10,14 @@ export default function AdminDashboard() {
 
   const [newDept, setNewDept] = useState('');
   
+  // FIXED: Added endTime to the default state so the Validation Engine has data to use
   const [newDoc, setNewDoc] = useState({ 
     name: '', 
     department: '', 
     roomName: '',
     availableDays: [1, 2, 3, 4, 5],
-    morningOP: { enabled: true, startTime: '09:00', capacity: 20 },
-    eveningOP: { enabled: true, startTime: '17:00', capacity: 20 }
+    morningOP: { enabled: true, startTime: '09:00', endTime: '13:00', capacity: 20 },
+    eveningOP: { enabled: true, startTime: '17:00', endTime: '20:00', capacity: 20 }
   });
 
   const DAYS_OF_WEEK = [
@@ -26,7 +27,6 @@ export default function AdminDashboard() {
     { value: 0, label: 'Sun' }
   ];
 
-  // CLEANUP: Removed the unused queueCount subscription that was wasting Firebase reads
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => setDepartments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
     const unsubDocs = onSnapshot(collection(db, "doctors"), (snap) => setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
@@ -54,6 +54,14 @@ export default function AdminDashboard() {
     if (newDoc.availableDays.length === 0) return alert("Select at least one working day");
     if (!newDoc.morningOP.enabled && !newDoc.eveningOP.enabled) return alert("You must enable at least one OP session (Morning or Evening)");
     
+    // Validate that End Time is after Start Time
+    if (newDoc.morningOP.enabled && newDoc.morningOP.startTime >= newDoc.morningOP.endTime) {
+      return alert("Morning OP End Time must be after the Start Time.");
+    }
+    if (newDoc.eveningOP.enabled && newDoc.eveningOP.startTime >= newDoc.eveningOP.endTime) {
+      return alert("Evening OP End Time must be after the Start Time.");
+    }
+    
     setIsProcessing(true);
     
     try {
@@ -74,14 +82,13 @@ export default function AdminDashboard() {
         daily_bookings: {}
       });
 
-      // CLEANUP: Force department to empty string so it doesn't accidentally auto-assign
       setNewDoc({ 
         name: '', department: '', roomName: '', 
         availableDays: [1, 2, 3, 4, 5], 
-        morningOP: { enabled: true, startTime: '09:00', capacity: 20 }, 
-        eveningOP: { enabled: true, startTime: '17:00', capacity: 20 } 
+        morningOP: { enabled: true, startTime: '09:00', endTime: '13:00', capacity: 20 }, 
+        eveningOP: { enabled: true, startTime: '17:00', endTime: '20:00', capacity: 20 } 
       });
-      alert("Doctor configured with specific OP times!");
+      alert("Doctor configured successfully with OP times!");
     } catch (error) {
       console.error("Error adding doctor:", error);
     }
@@ -145,13 +152,17 @@ export default function AdminDashboard() {
                     </label>
                   </div>
                   {newDoc.morningOP.enabled && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-3 gap-3">
                       <div>
-                        <label className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Clock size={12}/> Start Time</label>
+                        <label className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Clock size={12}/> Start</label>
                         <input type="time" required value={newDoc.morningOP.startTime} onChange={(e) => setNewDoc({...newDoc, morningOP: {...newDoc.morningOP, startTime: e.target.value}})} className="w-full px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm font-bold"/>
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-blue-700 mb-1">Max Capacity</label>
+                        <label className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1"><Clock size={12}/> End</label>
+                        <input type="time" required value={newDoc.morningOP.endTime} onChange={(e) => setNewDoc({...newDoc, morningOP: {...newDoc.morningOP, endTime: e.target.value}})} className="w-full px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm font-bold"/>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-blue-700 mb-1">Capacity</label>
                         <input type="number" required min="1" value={newDoc.morningOP.capacity} onChange={(e) => setNewDoc({...newDoc, morningOP: {...newDoc.morningOP, capacity: Number(e.target.value)}})} className="w-full px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm font-bold"/>
                       </div>
                     </div>
@@ -167,13 +178,17 @@ export default function AdminDashboard() {
                     </label>
                   </div>
                   {newDoc.eveningOP.enabled && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-3 gap-3">
                       <div>
-                        <label className="text-xs font-semibold text-orange-700 mb-1 flex items-center gap-1"><Clock size={12}/> Start Time</label>
+                        <label className="text-xs font-semibold text-orange-700 mb-1 flex items-center gap-1"><Clock size={12}/> Start</label>
                         <input type="time" required value={newDoc.eveningOP.startTime} onChange={(e) => setNewDoc({...newDoc, eveningOP: {...newDoc.eveningOP, startTime: e.target.value}})} className="w-full px-3 py-2 bg-white border border-orange-200 rounded-lg text-sm font-bold"/>
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-orange-700 mb-1">Max Capacity</label>
+                        <label className="text-xs font-semibold text-orange-700 mb-1 flex items-center gap-1"><Clock size={12}/> End</label>
+                        <input type="time" required value={newDoc.eveningOP.endTime} onChange={(e) => setNewDoc({...newDoc, eveningOP: {...newDoc.eveningOP, endTime: e.target.value}})} className="w-full px-3 py-2 bg-white border border-orange-200 rounded-lg text-sm font-bold"/>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-orange-700 mb-1">Capacity</label>
                         <input type="number" required min="1" value={newDoc.eveningOP.capacity} onChange={(e) => setNewDoc({...newDoc, eveningOP: {...newDoc.eveningOP, capacity: Number(e.target.value)}})} className="w-full px-3 py-2 bg-white border border-orange-200 rounded-lg text-sm font-bold"/>
                       </div>
                     </div>

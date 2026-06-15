@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { collection, doc, onSnapshot, updateDoc, query, where, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
+import { getISTDateString } from '../utils/dateHelpers';
 import { ArrowRight, SkipForward, PlayCircle, AlertCircle, Activity } from 'lucide-react';
 import { createSessionState, getSessionKey } from '../utils/queueSession';
 
@@ -9,7 +10,7 @@ export default function NurseDashboard() {
   const [selectedDoctorId, setSelectedDoctorId] = useState('');
   const [activeDocProfile, setActiveDocProfile] = useState(null);
   
-  const [sessionDate, setSessionDate] = useState(new Date().toISOString().split('T')[0]);
+  const [sessionDate, setSessionDate] = useState(getISTDateString());
   const [sessionBlock, setSessionBlock] = useState('Morning');
   
   const [activePatient, setActivePatient] = useState(null); 
