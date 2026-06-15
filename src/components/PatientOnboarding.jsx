@@ -7,6 +7,7 @@ import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stetho
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 import { getISTDateString } from '../utils/dateHelpers';
 import { validateBookingRequest } from '../utils/bookingValidation';
+import toast from 'react-hot-toast'; // <-- IMPORT TOAST
 
 export default function PatientOnboarding() {
   const navigate = useNavigate();
@@ -110,8 +111,6 @@ export default function PatientOnboarding() {
     }
   };
 
-  // --- AUTH & BOOKING ACTIONS ---
-
   const formatAvailableDays = (daysArray) => {
     if (!daysArray || daysArray.length === 0) return "Not Scheduled";
     if (daysArray.length === 7) return "Everyday";
@@ -119,21 +118,29 @@ export default function PatientOnboarding() {
     return daysArray.sort().map(d => dayMap[d]).join(', ');
   };
 
+  // --- AUTH & BOOKING ACTIONS ---
+
   const requestOTP = async (e) => {
     e.preventDefault();
-    if (phone.length !== 10) return alert("Enter a valid 10-digit number");
+    if (phone.length !== 10) return toast.error("Enter a valid 10-digit number"); // <-- TOAST
+    
     setIsProcessing(true);
     try {
       const confirmationResult = await signInWithPhoneNumber(auth, "+91" + phone, window.recaptchaVerifier);
       window.confirmationResult = confirmationResult;
+      toast.success("Verification code sent!"); // <-- TOAST
       setStep(2); 
-    } catch (error) { alert("Failed to send OTP."); }
-    setIsProcessing(false);
+    } catch (error) { 
+      toast.error("Failed to send OTP. Please check your network."); // <-- TOAST
+    } finally {
+      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
+    }
   };
 
   const verifyOTP = async (e) => {
     e.preventDefault();
-    if (otp.length !== 6) return alert("Enter 6-digit OTP");
+    if (otp.length !== 6) return toast.error("Enter 6-digit OTP"); // <-- TOAST
+    
     setIsProcessing(true);
     try {
       const result = await window.confirmationResult.confirm(otp);
@@ -144,22 +151,27 @@ export default function PatientOnboarding() {
         setAge(patientSnap.data().age);
         setGender(patientSnap.data().gender);
       }
+      toast.success("Identity verified!"); // <-- TOAST
       setStep(3); 
-    } catch (error) { alert("Incorrect OTP."); }
-    setIsProcessing(false);
+    } catch (error) { 
+      toast.error("Incorrect verification code."); // <-- TOAST
+    } finally {
+      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
+    }
   };
 
   const handleBooking = async (e) => {
     e.preventDefault();
-    if (!patientName || !age || !bookingDate || !activeDocProfile) return alert("Please fill all details");
+    if (!patientName || !age || !bookingDate || !activeDocProfile) {
+      return toast.error("Please fill all patient and booking details"); // <-- TOAST
+    }
     
     setIsProcessing(true);
 
-    // Run the Universal Validation Engine BEFORE trying to hit the database
     const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, bookingDate, sessionBlock);
     
     if (!validation.valid) {
-      alert(validation.error);
+      toast.error(validation.error); // <-- TOAST
       setIsProcessing(false);
       return;
     }
@@ -218,17 +230,23 @@ export default function PatientOnboarding() {
         return secureTrackerId;
       });
 
-      navigate(`/tracker/${generatedTrackerId}`);
+      toast.success("Token Confirmed! Opening your live tracker..."); // <-- TOAST
+      
+      // UX POLISH: Give the user 1 second to read the success message before redirecting
+      setTimeout(() => {
+        navigate(`/tracker/${generatedTrackerId}`);
+      }, 1000);
       
     } catch (error) {
       console.error("Booking Failed:", error);
       if (error.message === 'CAPACITY_FULL') {
-        alert("The session filled up while you were booking. Please select another slot.");
+        toast.error("The session filled up while you were booking. Please select another slot."); // <-- TOAST
       } else {
-        alert("Booking failed. Please ensure Admin has fully configured this doctor.");
+        toast.error("Booking failed. Please ensure Admin has fully configured this doctor."); // <-- TOAST
       }
+    } finally {
+      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
     }
-    setIsProcessing(false);
   };
 
   return (
@@ -254,7 +272,7 @@ export default function PatientOnboarding() {
                 <input type="tel" required maxLength="10" placeholder="Enter 10-digit number" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, ''))} className="w-full pl-14 pr-4 py-4 bg-gray-50 border border-gray-200 rounded-2xl font-bold text-lg text-gray-800" />
               </div>
             </div>
-            <button type="submit" disabled={isProcessing} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2">
+            <button type="submit" disabled={isProcessing} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2 transition-all">
               {isProcessing ? "Sending OTP..." : "Send Verification SMS"} <ArrowRight size={20} />
             </button>
           </form>
@@ -269,7 +287,7 @@ export default function PatientOnboarding() {
               <label className="block text-xs font-bold text-gray-700 uppercase mb-2 tracking-wide">Enter 6-Digit Code</label>
               <input type="text" required maxLength="6" placeholder="••••••" value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} className="w-full px-4 py-4 bg-gray-50 border border-gray-200 rounded-2xl font-bold text-2xl tracking-[0.5em] text-center text-gray-900" />
             </div>
-            <button type="submit" disabled={isProcessing} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2">
+            <button type="submit" disabled={isProcessing} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2 transition-all">
               {isProcessing ? "Verifying..." : "Confirm Verification"}
             </button>
           </form>
@@ -332,7 +350,6 @@ export default function PatientOnboarding() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Calendar size={14} className="text-indigo-500" /> Choose Date</label>
-                  {/* SAFE IST DATE RESTRICTION */}
                   <input type="date" required min={getISTDateString()} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
                 </div>
                 <div>
@@ -345,7 +362,7 @@ export default function PatientOnboarding() {
               </div>
             </div>
 
-            <button type="submit" disabled={isProcessing} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2">
+            <button type="submit" disabled={isProcessing} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2 transition-all">
               <CalendarPlus size={20} /> {isProcessing ? "Validating & Securing Token..." : "Confirm Booking & Generate ETA"}
             </button>
           </form>

@@ -4,6 +4,7 @@ import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Clock, AlertCircle, User, MapPin, Users, Activity, Timer, Info } from 'lucide-react';
 import { createSessionState } from '../utils/queueSession';
+import toast from 'react-hot-toast'; // <-- IMPORT TOAST
 
 export default function PatientTracker() {
   const { tokenId } = useParams();
@@ -22,6 +23,20 @@ export default function PatientTracker() {
     return () => unsub();
   }, [tokenId]);
 
+  // NEW: PROACTIVE TOAST NOTIFICATIONS!
+  useEffect(() => {
+    if (ticket?.status === 'called') {
+      toast.success("It's your turn! Please proceed to the room.", {
+        duration: 8000, // Keep it on screen longer
+        icon: '👨‍⚕️',
+      });
+    } else if (ticket?.status === 'skipped') {
+      toast.error("You missed your call! Please see reception.", {
+        duration: 8000,
+      });
+    }
+  }, [ticket?.status]);
+
   useEffect(() => {
     if (!ticket?.doctor_id) return;
     const unsub = onSnapshot(doc(db, "doctors", ticket.doctor_id), (snap) => {
@@ -38,7 +53,6 @@ export default function PatientTracker() {
     return () => unsub();
   }, [ticket]);
 
-  // THE FIX: doctor_id isolation AND ["arrived", "called"] hallway bridge
   useEffect(() => {
     if (!ticket?.session_key || !ticket?.doctor_id) return;
     const q = query(
@@ -68,6 +82,8 @@ export default function PatientTracker() {
   const getDynamicETA = () => {
     if (!ticket || !docProfile?.op_schedule || !queueEngine) return null;
     
+    if (['completed', 'skipped'].includes(ticket.status)) return null;
+    
     const isMorning = ticket.session_block === 'Morning';
     const scheduleConfig = isMorning ? docProfile.op_schedule.morning : docProfile.op_schedule.evening;
     if (!scheduleConfig || !scheduleConfig.startTime) return null;
@@ -86,18 +102,15 @@ export default function PatientTracker() {
     if (myVirtualIndex !== -1) {
       lobbyIndex = myVirtualIndex; 
     } else {
-      // Fallback: Safe math that handles penalties
       const currentServing = sessionState.current_serving_token || 0;
-      lobbyIndex = Math.max(0, (myToken + (ticket.penalty_count * 3)) - currentServing - 1);
+      lobbyIndex = Math.max(0, (myToken + ((ticket.penalty_count || 0) * 3)) - currentServing - 1);
     }
 
-    // MODE 1: LIVE SESSION
     if (sessionState.session_active) {
       liveAvg = sessionState.rolling_average || 5;
       
-      // THE FIX: Check if someone is actually sitting in the room
       const hasActiveConsultation = sessionState.last_consultation_start_time != null;
-      let currentRemainingMins = 0; // Default to 0 for an empty room
+      let currentRemainingMins = 0;
 
       if (hasActiveConsultation) {
         const startedAt = sessionState.last_consultation_start_time.toDate();
@@ -105,15 +118,12 @@ export default function PatientTracker() {
         currentRemainingMins = Math.max(0, liveAvg - currentElapsed);
       }
 
-      // MATH: Wait time only adds room time if someone is actually in it
       const totalWaitMins = currentRemainingMins + (lobbyIndex * liveAvg);
       targetDate = new Date(clockTick + (totalWaitMins * 60000));
 
-      // UI: Display count only adds +1 if someone is actually in the room
       displayAhead = lobbyIndex + (hasActiveConsultation ? 1 : 0);
 
     } 
-    // MODE 2: PRE-SESSION / PAUSED SESSION
     else {
       const [startHour, startMinute] = scheduleConfig.startTime.split(':').map(Number);
       liveAvg = sessionState.baseline_average || 5;
@@ -135,19 +145,32 @@ export default function PatientTracker() {
 
     const diffMs = targetDate.getTime() - clockTick;
     const minutesRemaining = Math.max(0, Math.ceil(diffMs / 60000));
+    const hasActiveConsultation = sessionState.last_consultation_start_time != null;
     
     let countdownText = `${minutesRemaining} mins remaining`;
-    
-    if (minutesRemaining <= 0) countdownText = "Doctor Running Behind Schedule";
 
-    // UX POLISH: Contextual overrides so the text always makes logical sense
     if (ticket.status === 'called') {
-      countdownText = "Proceed to the room";
-    } else if (ticket.status === 'in_consultation') {
+      countdownText = "Proceed to consultation room";
+    } 
+    else if (ticket.status === 'in_consultation') {
       countdownText = "Consultation in progress";
-    } else if (sessionState.session_active && !sessionState.last_consultation_start_time && minutesRemaining <= 0) {
-      // If the timer is paused but the session is live, they are in the hallway!
-      countdownText = "Waiting for next patient to enter";
+    } 
+    else if (!sessionState.session_active) {
+      countdownText = "Session has not started yet";
+    } 
+    else if (!hasActiveConsultation) {
+      if (displayAhead === 0) {
+        countdownText = "You are next in line!";
+      } else {
+        countdownText = "Waiting for next patient to be called";
+      }
+    } 
+    else {
+      if (currentElapsed > (liveAvg * 2)) {
+        countdownText = "Consultation taking longer than usual";
+      } else if (minutesRemaining <= 0) {
+        countdownText = "Doctor is finishing up current patient";
+      }
     }
 
     return {
@@ -158,7 +181,6 @@ export default function PatientTracker() {
       currentElapsed: currentElapsed
     };
   };
-  
 
   const getStateUI = () => {
     switch (ticket?.status) {
@@ -175,7 +197,7 @@ export default function PatientTracker() {
   if (!ticket || !queueEngine) return <div className="p-10 text-center font-bold text-gray-400">Verifying secure token...</div>;
   
   const ui = getStateUI();
-  const etaData = getDynamicETA() || { clockTime: "--:--", countdown: "Calculating...", ahead: 0, liveAvg: 0, currentElapsed: 0 };
+  const etaData = getDynamicETA() || { clockTime: "--:--", countdown: "Consultation Ended", ahead: 0, liveAvg: 0, currentElapsed: 0 };
   const sessionState = createSessionState(queueEngine.daily_bookings?.[ticket.session_key]);
 
   const isActivelyWaiting = ['booked', 'arrived'].includes(ticket.status);
@@ -208,7 +230,7 @@ export default function PatientTracker() {
 
           <div className="bg-blue-50 rounded-2xl p-6 border border-blue-100 relative overflow-hidden">
             
-            {sessionState.session_active && (
+            {sessionState.session_active && !['completed', 'skipped'].includes(ticket.status) && (
               <div className="absolute top-4 right-4 flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-100 px-2 py-1 rounded-full animate-pulse">
                 <Activity size={12} /> LIVE
               </div>
@@ -222,16 +244,16 @@ export default function PatientTracker() {
                 {isActivelyWaiting ? etaData.clockTime : "--:--"}
               </span>
               
-              {isActivelyWaiting && (
-                <div className={`mt-1 flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${etaData.countdown.includes("Behind") ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"}`}>
+              {(isActivelyWaiting || ticket.status === 'called' || ticket.status === 'in_consultation') && (
+                <div className={`mt-1 flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-bold ${etaData.countdown.includes("Behind") || etaData.countdown.includes("longer") ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"}`}>
                    <Timer size={14} /> {etaData.countdown}
                 </div>
               )}
             </div>
 
-            {isActivelyWaiting && sessionState.session_active && etaData.currentElapsed > 0 && (
+            {ticket.status === 'in_consultation' && sessionState.session_active && etaData.currentElapsed > 0 && (
                <div className="mt-2 text-xs text-blue-600 font-medium bg-blue-100/50 py-1.5 px-3 rounded-lg inline-block">
-                 Current Patient: {etaData.currentElapsed} mins elapsed
+                 Current Consultation: {etaData.currentElapsed} mins elapsed
                </div>
             )}
 

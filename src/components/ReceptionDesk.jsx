@@ -6,6 +6,7 @@ import { createSessionState, getSessionConfig, getSessionKey } from '../utils/qu
 import { QRCodeSVG } from 'qrcode.react';
 import { getISTDateString } from '../utils/dateHelpers';
 import { validateBookingRequest } from '../utils/bookingValidation';
+import toast from 'react-hot-toast'; // <-- IMPORT TOAST
 
 export default function ReceptionDesk() {
   const [activeTab, setActiveTab] = useState('today');
@@ -27,7 +28,6 @@ export default function ReceptionDesk() {
   const [doctors, setDoctors] = useState([]);
   const [activeDocProfile, setActiveDocProfile] = useState(null);
 
-  // 1. Fetch Today's Online Bookings
   useEffect(() => {
     const today = getISTDateString();
     const q = query(
@@ -41,7 +41,6 @@ export default function ReceptionDesk() {
     return () => unsub();
   }, []);
 
-  // 2. Fetch Future Bookings Directory
   useEffect(() => {
     const today = getISTDateString(); 
     const q = query(
@@ -55,7 +54,6 @@ export default function ReceptionDesk() {
     return () => unsub();
   }, []);
 
-  // 3. Fetch Organization Data & Initial Load
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => {
       const depts = snap.docs.map(doc => doc.data().name);
@@ -66,10 +64,8 @@ export default function ReceptionDesk() {
       setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
     return () => { unsubDepts(); unsubDocs(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 4. Initial sync of Doctor when data first loads
   useEffect(() => {
     if (!selectedDoctor) {
       const availableDocs = doctors.filter(d => d.department === selectedDept);
@@ -84,9 +80,6 @@ export default function ReceptionDesk() {
     }
   }, [selectedDept, doctors, selectedDoctor]);
 
-
-  // --- EXPLICIT UI EVENT HANDLERS ---
-  
   const handleDeptChange = (e) => {
     const newDept = e.target.value;
     setSelectedDept(newDept);
@@ -122,31 +115,32 @@ export default function ReceptionDesk() {
     }
   };
 
-
-  // --- ACTIONS ---
-
   const markAsArrived = async (tokenId) => {
     try {
       await updateDoc(doc(db, "today_queue", tokenId), {
         status: "arrived",
         is_physically_present: true
       });
+      toast.success("Arrival verified successfully!"); // <-- TOAST NOTIFICATION
     } catch (error) {
       console.error("Error updating status:", error);
+      toast.error("Failed to verify arrival."); // <-- TOAST NOTIFICATION
     }
   };
 
   const handleWalkIn = async (e) => {
     e.preventDefault();
-    if (!patientName || phone.length !== 10 || !selectedDoctor || !activeDocProfile) return alert("Fill all required fields.");
+    if (!patientName || phone.length !== 10 || !selectedDoctor || !activeDocProfile) {
+      return toast.error("Please fill all required fields correctly."); // <-- REPLACED ALERT
+    }
+    
     setIsProcessing(true);
 
     const today = getISTDateString();
 
-    // Validating before creating a walk-in token
     const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, today, sessionBlock);
     if (!validation.valid) {
-      alert(`Walk-In blocked: ${validation.error}`);
+      toast.error(`Walk-In blocked: ${validation.error}`); // <-- REPLACED ALERT
       setIsProcessing(false);
       return;
     }
@@ -208,24 +202,32 @@ export default function ReceptionDesk() {
           name: patientName 
         });
         
+        toast.success("Walk-in registered successfully!"); // <-- TOAST NOTIFICATION
         setPatientName(''); setPhone('');
       });
       
     } catch (error) {
-      if (error.message === 'CAPACITY_FULL') alert(`The ${sessionBlock} session for this doctor is fully booked!`);
-      else alert("Registration failed. Ensure doctor is configured.");
+      if (error.message === 'CAPACITY_FULL') {
+        toast.error(`The ${sessionBlock} session for this doctor is fully booked!`); // <-- REPLACED ALERT
+      } else {
+        toast.error("Registration failed. Ensure doctor is configured."); // <-- REPLACED ALERT
+      }
+    } finally {
+      // THE FIX: Ensured processing state releases no matter what happens!
+      setIsProcessing(false); 
     }
-    setIsProcessing(false);
   };
 
   const copyToClipboard = () => {
     if (generatedTracker) {
       navigator.clipboard.writeText(generatedTracker.url);
       setCopied(true);
+      toast.success("Link copied to clipboard!"); // <-- UX POLISH
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
+  // ... (The render/return block remains completely identical to your previous design)
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">

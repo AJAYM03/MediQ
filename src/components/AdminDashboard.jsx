@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, addDoc, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Building2, PlusCircle, CalendarDays, Clock } from 'lucide-react';
+import toast from 'react-hot-toast'; // <-- IMPORT TOAST
 
 export default function AdminDashboard() {
   const [departments, setDepartments] = useState([]);
@@ -10,7 +11,6 @@ export default function AdminDashboard() {
 
   const [newDept, setNewDept] = useState('');
   
-  // FIXED: Added endTime to the default state so the Validation Engine has data to use
   const [newDoc, setNewDoc] = useState({ 
     name: '', 
     department: '', 
@@ -37,7 +37,14 @@ export default function AdminDashboard() {
     e.preventDefault();
     if (!newDept) return;
     setIsProcessing(true);
-    try { await addDoc(collection(db, "departments"), { name: newDept, active: true }); setNewDept(''); } catch (error) { console.error(error); }
+    try { 
+      await addDoc(collection(db, "departments"), { name: newDept, active: true }); 
+      setNewDept(''); 
+      toast.success("Department added successfully!"); // <-- NEW TOAST
+    } catch (error) { 
+      console.error(error);
+      toast.error("Failed to add department."); // <-- NEW TOAST
+    }
     setIsProcessing(false);
   };
 
@@ -50,16 +57,17 @@ export default function AdminDashboard() {
 
   const handleAddDoctor = async (e) => {
     e.preventDefault();
-    if (!newDoc.name || !newDoc.department) return alert("Fill all required doctor details");
-    if (newDoc.availableDays.length === 0) return alert("Select at least one working day");
-    if (!newDoc.morningOP.enabled && !newDoc.eveningOP.enabled) return alert("You must enable at least one OP session (Morning or Evening)");
     
-    // Validate that End Time is after Start Time
+    // REPLACE ALL ALERTS WITH TOAST.ERROR
+    if (!newDoc.name || !newDoc.department) return toast.error("Fill all required doctor details");
+    if (newDoc.availableDays.length === 0) return toast.error("Select at least one working day");
+    if (!newDoc.morningOP.enabled && !newDoc.eveningOP.enabled) return toast.error("You must enable at least one OP session");
+    
     if (newDoc.morningOP.enabled && newDoc.morningOP.startTime >= newDoc.morningOP.endTime) {
-      return alert("Morning OP End Time must be after the Start Time.");
+      return toast.error("Morning OP End Time must be after the Start Time");
     }
     if (newDoc.eveningOP.enabled && newDoc.eveningOP.startTime >= newDoc.eveningOP.endTime) {
-      return alert("Evening OP End Time must be after the Start Time.");
+      return toast.error("Evening OP End Time must be after the Start Time");
     }
     
     setIsProcessing(true);
@@ -88,9 +96,12 @@ export default function AdminDashboard() {
         morningOP: { enabled: true, startTime: '09:00', endTime: '13:00', capacity: 20 }, 
         eveningOP: { enabled: true, startTime: '17:00', endTime: '20:00', capacity: 20 } 
       });
-      alert("Doctor configured successfully with OP times!");
+      
+      toast.success("Doctor configured successfully!"); // <-- REPLACED ALERT WITH SUCCESS TOAST
+      
     } catch (error) {
       console.error("Error adding doctor:", error);
+      toast.error("Failed to configure doctor. Please try again."); // <-- NEW ERROR TOAST
     }
     setIsProcessing(false);
   };
