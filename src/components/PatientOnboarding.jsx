@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
-import { doc, getDoc, collection, runTransaction, onSnapshot, arrayUnion } from 'firebase/firestore';
+import { RecaptchaVerifier, signInWithPhoneNumber, onAuthStateChanged, signOut } from "firebase/auth"; // <-- NEW IMPORTS
+import { doc, getDoc, collection, runTransaction, onSnapshot, arrayUnion, query, where } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock, AlertCircle } from 'lucide-react';
+import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stethoscope, Clock, AlertCircle, LogOut } from 'lucide-react';
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 import { getISTDateString } from '../utils/dateHelpers';
 import { validateBookingRequest } from '../utils/bookingValidation';
@@ -32,8 +32,29 @@ export default function PatientOnboarding() {
   const [departments, setDepartments] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [activeDocProfile, setActiveDocProfile] = useState(null);
+  
+  const [myTickets, setMyTickets] = useState([]);
 
-  // 1. Initialize Recaptcha & Default Date (IST)
+  // NEW: 1. Listen for existing login sessions on mount!
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setUid(user.uid);
+        const patientSnap = await getDoc(doc(db, "patients", user.uid));
+        if (patientSnap.exists()) {
+          setPatientName(patientSnap.data().full_name || '');
+          setAge(patientSnap.data().age || '');
+          setGender(patientSnap.data().gender || 'Male');
+        }
+        setStep(3); // Skip login steps
+      } else {
+        setStep(1); // User is genuinely logged out
+      }
+    });
+
+    return () => unsubAuth();
+  }, []);
+
   useEffect(() => {
     if (!window.recaptchaVerifier) {
       window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
@@ -41,7 +62,6 @@ export default function PatientOnboarding() {
     setBookingDate(getISTDateString());
   }, []);
 
-  // 2. Fetch Organizations & Initial Sync
   useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => {
       const depts = snap.docs.map(doc => doc.data().name);
@@ -55,10 +75,8 @@ export default function PatientOnboarding() {
     });
     
     return () => { unsubDepts(); unsubDocs(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedDept]);
 
-  // 3. Initial Load: Auto-select first available doctor when data arrives
   useEffect(() => {
     if (!selectedDoctor && doctors.length > 0 && selectedDept) {
       const availableDocs = doctors.filter(d => d.department === selectedDept);
@@ -74,7 +92,18 @@ export default function PatientOnboarding() {
     }
   }, [doctors, selectedDept, selectedDoctor]);
 
-  // --- EXPLICIT UI EVENT HANDLERS ---
+  useEffect(() => {
+    if (!uid) return;
+    const q = query(
+      collection(db, "today_queue"),
+      where("patient_uid", "==", uid),
+      where("status", "in", ["booked", "arrived", "called", "in_consultation"])
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setMyTickets(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsub();
+  }, [uid]);
 
   const handleDeptChange = (e) => {
     const newDept = e.target.value;
@@ -118,8 +147,6 @@ export default function PatientOnboarding() {
     return daysArray.sort().map(d => dayMap[d]).join(', ');
   };
 
-  // --- AUTH & BOOKING ACTIONS ---
-
   const requestOTP = async (e) => {
     e.preventDefault();
     if (phone.length !== 10) return toast.error("Enter a valid 10-digit number"); 
@@ -147,9 +174,9 @@ export default function PatientOnboarding() {
       setUid(result.user.uid);
       const patientSnap = await getDoc(doc(db, "patients", result.user.uid));
       if (patientSnap.exists()) {
-        setPatientName(patientSnap.data().full_name);
-        setAge(patientSnap.data().age);
-        setGender(patientSnap.data().gender);
+        setPatientName(patientSnap.data().full_name || '');
+        setAge(patientSnap.data().age || '');
+        setGender(patientSnap.data().gender || 'Male');
       }
       toast.success("Identity verified!"); 
       setStep(3); 
@@ -158,6 +185,17 @@ export default function PatientOnboarding() {
     } finally {
       setIsProcessing(false); 
     }
+  };
+
+  // NEW: 2. Add a logout handler to clear state safely
+  const handleLogout = async () => {
+    await signOut(auth);
+    setUid(null);
+    setPhone('');
+    setOtp('');
+    setMyTickets([]);
+    setStep(1);
+    toast.success("Logged out securely.");
   };
 
   const handleBooking = async (e) => {
@@ -204,17 +242,14 @@ export default function PatientOnboarding() {
           capacity: maxCapacity
         };
 
-        // Save Profile
         transaction.set(doc(db, "patients", uid), {
-          full_name: patientName, age: Number(age), gender: gender, phone_number: "+91" + phone,
+          full_name: patientName, age: Number(age), gender: gender, phone_number: auth.currentUser?.phoneNumber || "+91" + phone,
           last_updated: new Date(), active_bookings: arrayUnion(`${selectedDoctor}_${blockKey}`) 
         }, { merge: true });
 
-        // Generate Secure ID once
         const queueRef = doc(collection(db, "today_queue")); 
         const secureTrackerId = queueRef.id;
 
-        // 1. Write the Math (Public Queue) - PII REMOVED
         transaction.set(queueRef, {
           tracker_id: secureTrackerId, 
           token_number: nextToken, 
@@ -231,14 +266,12 @@ export default function PatientOnboarding() {
           penalty_count: 0
         });
 
-        // 2. Write the Identity (Private PII) - NEW ARCHITECTURE
         transaction.set(doc(db, "queue_pii", secureTrackerId), {
           patient_name: patientName,
           patient_uid: uid,
-          phone_number: "+91" + phone
+          phone_number: auth.currentUser?.phoneNumber || "+91" + phone
         });
 
-        // Increment only this doctor/date/session counter.
         transaction.update(doctorQueueRef, { 
           daily_bookings: { ...dailyBookingsMap, [blockKey]: nextSessionState }
         });
@@ -253,7 +286,6 @@ export default function PatientOnboarding() {
       }, 1000);
       
     } catch (error) {
-      console.error("Booking Failed:", error);
       if (error.message === 'CAPACITY_FULL') {
         toast.error("The session filled up while you were booking. Please select another slot."); 
       } else {
@@ -270,7 +302,14 @@ export default function PatientOnboarding() {
       
       <div className="w-full max-w-lg bg-white rounded-3xl shadow-xl border border-gray-100 p-8">
         
-        <div className="text-center mb-8">
+        <div className="text-center mb-8 relative">
+          {/* NEW: 3. Add the Logout Button in the Header if logged in */}
+          {step === 3 && (
+            <button onClick={handleLogout} className="absolute right-0 top-0 text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1 text-xs font-bold">
+              <LogOut size={14}/> Exit
+            </button>
+          )}
+
           <div className="bg-blue-100 w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3 text-blue-600">
              <Activity size={28} />
           </div>
@@ -309,78 +348,108 @@ export default function PatientOnboarding() {
         )}
 
         {step === 3 && (
-          <form onSubmit={handleBooking} className="space-y-5 max-h-[70vh] overflow-y-auto pr-1">
+          <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6">
             
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 space-y-3">
-              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">1. Patient Information</h3>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
-                <div className="relative">
-                  <User className="absolute left-3 top-2.5 text-gray-400" size={16} />
-                  <input type="text" required placeholder="As per ID details" value={patientName} onChange={(e) => setPatientName(e.target.value)} className="w-full pl-10 pr-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+            {myTickets.length > 0 && (
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Your Active Tokens</h3>
+                {myTickets.map(ticket => (
+                  <button 
+                    key={ticket.id}
+                    onClick={() => navigate(`/tracker/${ticket.tracker_id}`)}
+                    className="w-full bg-blue-50/50 hover:bg-blue-50 border border-blue-200 p-4 rounded-2xl flex items-center justify-between transition-colors text-left group"
+                  >
+                    <div>
+                      <p className="font-bold text-blue-900 flex items-center gap-1.5"><Stethoscope size={16} className="text-blue-500"/> Dr. {ticket.doctor_name}</p>
+                      <p className="text-xs text-blue-600 font-medium mt-1">{ticket.appointment_date} • {ticket.session_block}</p>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-2xl font-black text-blue-700">#{ticket.token_number}</span>
+                      <span className="text-[10px] font-bold uppercase text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded mt-1">Open Tracker</span>
+                    </div>
+                  </button>
+                ))}
+                
+                <div className="flex items-center gap-4 py-4">
+                  <div className="h-px bg-gray-100 flex-1"></div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Or Book New Session</span>
+                  <div className="h-px bg-gray-100 flex-1"></div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Age</label>
-                  <input type="number" required placeholder="Years" value={age} onChange={(e) => setAge(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Gender</label>
-                  <select value={gender} onChange={(e) => setGender(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
-                    <option>Male</option><option>Female</option><option>Other</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+            )}
 
-            <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50 space-y-3">
-              <h3 className="text-xs font-bold text-blue-500 uppercase tracking-wider mb-1">2. Practitioner Selection</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <form onSubmit={handleBooking} className="space-y-5">
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 space-y-3">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">1. Patient Information</h3>
                 <div>
-                  <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Stethoscope size={14} className="text-blue-500" /> Department</label>
-                  <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
-                    {departments.length === 0 && <option value="">No Departments setup</option>}
-                    {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
-                  </select>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-2.5 text-gray-400" size={16} />
+                    <input type="text" required placeholder="As per ID details" value={patientName} onChange={(e) => setPatientName(e.target.value)} className="w-full pl-10 pr-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">Assign Practitioner</label>
-                  <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
-                    {doctors.filter(d => d.department === selectedDept).length === 0 && <option value="">No Doctors</option>}
-                    {doctors.filter(doc => doc.department === selectedDept).map((doc) => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
-                  </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Age</label>
+                    <input type="number" required placeholder="Years" value={age} onChange={(e) => setAge(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Gender</label>
+                    <select value={gender} onChange={(e) => setGender(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                      <option>Male</option><option>Female</option><option>Other</option>
+                    </select>
+                  </div>
                 </div>
               </div>
-              
-              {activeDocProfile && (
-                <div className="mt-2 text-xs font-bold text-blue-600 flex items-center gap-1.5 bg-blue-100/50 p-2 rounded-lg border border-blue-200">
-                  <AlertCircle size={14} /> Available: {formatAvailableDays(activeDocProfile.available_days)}
-                </div>
-              )}
-            </div>
 
-            <div className="bg-indigo-50/40 p-4 rounded-2xl border border-indigo-100/40 space-y-3">
-              <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">3. Schedule Stream</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Calendar size={14} className="text-indigo-500" /> Choose Date</label>
-                  <input type="date" required min={getISTDateString()} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50 space-y-3">
+                <h3 className="text-xs font-bold text-blue-500 uppercase tracking-wider mb-1">2. Practitioner Selection</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Stethoscope size={14} className="text-blue-500" /> Department</label>
+                    <select required value={selectedDept} onChange={handleDeptChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                      {departments.length === 0 && <option value="">No Departments setup</option>}
+                      {departments.map((dept, idx) => <option key={idx} value={dept}>{dept}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Assign Practitioner</label>
+                    <select required value={selectedDoctor} onChange={handleDoctorChange} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                      {doctors.filter(d => d.department === selectedDept).length === 0 && <option value="">No Doctors</option>}
+                      {doctors.filter(doc => doc.department === selectedDept).map((doc) => <option key={doc.id} value={doc.id}>{doc.name}</option>)}
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Clock size={14} className="text-indigo-500" /> Session Block</label>
-                  <select value={sessionBlock} onChange={(e) => setSessionBlock(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
-                    {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning Session</option>}
-                    {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening Session</option>}
-                  </select>
+                
+                {activeDocProfile && (
+                  <div className="mt-2 text-xs font-bold text-blue-600 flex items-center gap-1.5 bg-blue-100/50 p-2 rounded-lg border border-blue-200">
+                    <AlertCircle size={14} /> Available: {formatAvailableDays(activeDocProfile.available_days)}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-indigo-50/40 p-4 rounded-2xl border border-indigo-100/40 space-y-3">
+                <h3 className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">3. Schedule Stream</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Calendar size={14} className="text-indigo-500" /> Choose Date</label>
+                    <input type="date" required min={getISTDateString()} value={bookingDate} onChange={(e) => setBookingDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm" />
+                  </div>
+                  <div>
+                    <label className="flex text-xs font-semibold text-gray-600 mb-1 items-center gap-1"><Clock size={14} className="text-indigo-500" /> Session Block</label>
+                    <select value={sessionBlock} onChange={(e) => setSessionBlock(e.target.value)} className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl font-medium text-sm">
+                      {activeDocProfile?.op_schedule?.morning?.enabled && <option value="Morning">Morning Session</option>}
+                      {activeDocProfile?.op_schedule?.evening?.enabled && <option value="Evening">Evening Session</option>}
+                    </select>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <button type="submit" disabled={isProcessing} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2 transition-all">
-              <CalendarPlus size={20} /> {isProcessing ? "Validating & Securing Token..." : "Confirm Booking & Generate ETA"}
-            </button>
-          </form>
+              <button type="submit" disabled={isProcessing} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl flex justify-center gap-2 transition-all">
+                <CalendarPlus size={20} /> {isProcessing ? "Validating & Securing Token..." : "Confirm Booking & Generate ETA"}
+              </button>
+            </form>
+          </div>
         )}
       </div>
     </div>

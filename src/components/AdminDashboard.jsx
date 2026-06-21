@@ -295,7 +295,7 @@ export default function AdminDashboard() {
                     <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Activity className="text-emerald-500" size={20}/> Active Doctors</h2>
                     <span className="bg-slate-200 text-slate-700 text-xs font-black px-2 py-1 rounded-lg">{doctors.length}</span>
                   </div>
-                  <div className="p-2 overflow-y-auto flex-1 divide-y divide-slate-100 max-h-[800px]">
+                  <div className="p-2 overflow-y-auto flex-1 divide-y divide-slate-100 max-h-200">
                      {doctors.length === 0 && <div className="p-8 text-center text-slate-400 font-bold">No doctors configured yet.</div>}
                      {doctors.map(doc => (
                        <div key={doc.id} className="p-4 flex items-center justify-between hover:bg-slate-50 rounded-xl transition-colors group">
