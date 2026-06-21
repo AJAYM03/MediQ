@@ -6,13 +6,14 @@ import { createSessionState, getSessionConfig, getSessionKey } from '../utils/qu
 import { QRCodeSVG } from 'qrcode.react';
 import { getISTDateString } from '../utils/dateHelpers';
 import { validateBookingRequest } from '../utils/bookingValidation';
-import toast from 'react-hot-toast'; // <-- IMPORT TOAST
+import toast from 'react-hot-toast';
 
 export default function ReceptionDesk() {
   const [activeTab, setActiveTab] = useState('today');
 
   const [bookedPatients, setBookedPatients] = useState([]);
   const [futureBookings, setFutureBookings] = useState([]);
+  const [piiMap, setPiiMap] = useState({});
 
   const [patientName, setPatientName] = useState('');
   const [phone, setPhone] = useState('');
@@ -55,6 +56,17 @@ export default function ReceptionDesk() {
   }, []);
 
   useEffect(() => {
+    const unsub = onSnapshot(collection(db, "queue_pii"), (snap) => {
+      const map = {};
+      snap.docs.forEach(doc => {
+        map[doc.id] = doc.data(); 
+      });
+      setPiiMap(map);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
     const unsubDepts = onSnapshot(collection(db, "departments"), (snap) => {
       const depts = snap.docs.map(doc => doc.data().name);
       setDepartments(depts);
@@ -64,7 +76,7 @@ export default function ReceptionDesk() {
       setDoctors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
     return () => { unsubDepts(); unsubDocs(); };
-  }, []);
+  }, [selectedDept]);
 
   useEffect(() => {
     if (!selectedDoctor) {
@@ -121,17 +133,17 @@ export default function ReceptionDesk() {
         status: "arrived",
         is_physically_present: true
       });
-      toast.success("Arrival verified successfully!"); // <-- TOAST NOTIFICATION
+      toast.success("Arrival verified successfully!");
     } catch (error) {
       console.error("Error updating status:", error);
-      toast.error("Failed to verify arrival."); // <-- TOAST NOTIFICATION
+      toast.error("Failed to verify arrival."); 
     }
   };
 
   const handleWalkIn = async (e) => {
     e.preventDefault();
     if (!patientName || phone.length !== 10 || !selectedDoctor || !activeDocProfile) {
-      return toast.error("Please fill all required fields correctly."); // <-- REPLACED ALERT
+      return toast.error("Please fill all required fields correctly."); 
     }
     
     setIsProcessing(true);
@@ -140,7 +152,7 @@ export default function ReceptionDesk() {
 
     const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, today, sessionBlock);
     if (!validation.valid) {
-      toast.error(`Walk-In blocked: ${validation.error}`); // <-- REPLACED ALERT
+      toast.error(`Walk-In blocked: ${validation.error}`); 
       setIsProcessing(false);
       return;
     }
@@ -173,20 +185,36 @@ export default function ReceptionDesk() {
 
         const newPatientRef = doc(collection(db, "patients"));
         transaction.set(newPatientRef, {
-          full_name: patientName, phone_number: "+91" + phone, registration_type: "walk-in", last_updated: new Date()
+          full_name: patientName, 
+          phone_number: "+91" + phone, 
+          registration_type: "walk-in", 
+          active_bookings: [], // THE FIX: Schema Normalization
+          last_updated: new Date()
         });
 
         const queueRef = doc(collection(db, "today_queue"));
         const secureTrackerId = queueRef.id;
 
         transaction.set(queueRef, {
-          tracker_id: secureTrackerId, token_number: nextToken, patient_uid: newPatientRef.id,
-          patient_name: patientName, department: selectedDept, doctor_id: selectedDoctor,
-          doctor_name: activeDocProfile.name, appointment_date: today,
-          session_block: sessionBlock, session_key: blockKey, 
+          tracker_id: secureTrackerId, 
+          token_number: nextToken, 
+          patient_uid: newPatientRef.id,
+          department: selectedDept, 
+          doctor_id: selectedDoctor,
+          doctor_name: activeDocProfile.name, 
+          appointment_date: today,
+          session_block: sessionBlock, 
+          session_key: blockKey, 
           is_physically_present: true, 
           status: "arrived", 
-          booking_type: "walk-in", penalty_count: 0
+          booking_type: "walk-in", 
+          penalty_count: 0
+        });
+
+        transaction.set(doc(db, "queue_pii", secureTrackerId), {
+          patient_name: patientName,
+          patient_uid: newPatientRef.id,
+          phone_number: "+91" + phone
         });
 
         transaction.update(doctorQueueRef, { 
@@ -202,18 +230,17 @@ export default function ReceptionDesk() {
           name: patientName 
         });
         
-        toast.success("Walk-in registered successfully!"); // <-- TOAST NOTIFICATION
+        toast.success("Walk-in registered successfully!"); 
         setPatientName(''); setPhone('');
       });
       
     } catch (error) {
       if (error.message === 'CAPACITY_FULL') {
-        toast.error(`The ${sessionBlock} session for this doctor is fully booked!`); // <-- REPLACED ALERT
+        toast.error(`The ${sessionBlock} session for this doctor is fully booked!`); 
       } else {
-        toast.error("Registration failed. Ensure doctor is configured."); // <-- REPLACED ALERT
+        toast.error("Registration failed. Ensure doctor is configured."); 
       }
     } finally {
-      // THE FIX: Ensured processing state releases no matter what happens!
       setIsProcessing(false); 
     }
   };
@@ -222,12 +249,11 @@ export default function ReceptionDesk() {
     if (generatedTracker) {
       navigator.clipboard.writeText(generatedTracker.url);
       setCopied(true);
-      toast.success("Link copied to clipboard!"); // <-- UX POLISH
+      toast.success("Link copied to clipboard!"); 
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  // ... (The render/return block remains completely identical to your previous design)
   return (
     <div className="min-h-screen bg-slate-50 p-6 font-sans">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -272,7 +298,8 @@ export default function ReceptionDesk() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="bg-blue-100 text-blue-700 font-black px-2 py-0.5 rounded text-sm">#{patient.token_number}</span>
-                        <h3 className="font-bold text-slate-900">{patient.patient_name}</h3>
+                        {/* THE FIX: Defensive UI Fallback */}
+                        <h3 className="font-bold text-slate-900">{piiMap[patient.id]?.patient_name || "Unknown Patient"}</h3>
                       </div>
                       <p className="text-sm text-slate-500 mt-1 flex items-center gap-1"><Clock size={14}/> {patient.doctor_name} ({patient.session_block})</p>
                     </div>
@@ -303,7 +330,8 @@ export default function ReceptionDesk() {
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <span className="bg-slate-100 text-slate-600 font-black px-2 py-0.5 rounded text-xs">{patient.appointment_date}</span>
-                        <h3 className="font-bold text-slate-900">{patient.patient_name}</h3>
+                        {/* THE FIX: Defensive UI Fallback */}
+                        <h3 className="font-bold text-slate-900">{piiMap[patient.id]?.patient_name || "Unknown Patient"}</h3>
                       </div>
                       <p className="text-sm text-slate-500">Token #{patient.token_number} • {patient.doctor_name} ({patient.session_block})</p>
                     </div>

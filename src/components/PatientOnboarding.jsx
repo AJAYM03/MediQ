@@ -7,7 +7,7 @@ import { User, CalendarPlus, ArrowRight, ShieldCheck, Activity, Calendar, Stetho
 import { createSessionState, getSessionConfig, getSessionKey } from '../utils/queueSession';
 import { getISTDateString } from '../utils/dateHelpers';
 import { validateBookingRequest } from '../utils/bookingValidation';
-import toast from 'react-hot-toast'; // <-- IMPORT TOAST
+import toast from 'react-hot-toast'; 
 
 export default function PatientOnboarding() {
   const navigate = useNavigate();
@@ -122,24 +122,24 @@ export default function PatientOnboarding() {
 
   const requestOTP = async (e) => {
     e.preventDefault();
-    if (phone.length !== 10) return toast.error("Enter a valid 10-digit number"); // <-- TOAST
+    if (phone.length !== 10) return toast.error("Enter a valid 10-digit number"); 
     
     setIsProcessing(true);
     try {
       const confirmationResult = await signInWithPhoneNumber(auth, "+91" + phone, window.recaptchaVerifier);
       window.confirmationResult = confirmationResult;
-      toast.success("Verification code sent!"); // <-- TOAST
+      toast.success("Verification code sent!"); 
       setStep(2); 
     } catch (error) { 
-      toast.error("Failed to send OTP. Please check your network."); // <-- TOAST
+      toast.error("Failed to send OTP. Please check your network."); 
     } finally {
-      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
+      setIsProcessing(false); 
     }
   };
 
   const verifyOTP = async (e) => {
     e.preventDefault();
-    if (otp.length !== 6) return toast.error("Enter 6-digit OTP"); // <-- TOAST
+    if (otp.length !== 6) return toast.error("Enter 6-digit OTP"); 
     
     setIsProcessing(true);
     try {
@@ -151,19 +151,19 @@ export default function PatientOnboarding() {
         setAge(patientSnap.data().age);
         setGender(patientSnap.data().gender);
       }
-      toast.success("Identity verified!"); // <-- TOAST
+      toast.success("Identity verified!"); 
       setStep(3); 
     } catch (error) { 
-      toast.error("Incorrect verification code."); // <-- TOAST
+      toast.error("Incorrect verification code."); 
     } finally {
-      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
+      setIsProcessing(false); 
     }
   };
 
   const handleBooking = async (e) => {
     e.preventDefault();
     if (!patientName || !age || !bookingDate || !activeDocProfile) {
-      return toast.error("Please fill all patient and booking details"); // <-- TOAST
+      return toast.error("Please fill all patient and booking details"); 
     }
     
     setIsProcessing(true);
@@ -171,7 +171,7 @@ export default function PatientOnboarding() {
     const validation = await validateBookingRequest(db, selectedDoctor, activeDocProfile, bookingDate, sessionBlock);
     
     if (!validation.valid) {
-      toast.error(validation.error); // <-- TOAST
+      toast.error(validation.error); 
       setIsProcessing(false);
       return;
     }
@@ -210,16 +210,32 @@ export default function PatientOnboarding() {
           last_updated: new Date(), active_bookings: arrayUnion(`${selectedDoctor}_${blockKey}`) 
         }, { merge: true });
 
-        // Generate Ticket
+        // Generate Secure ID once
         const queueRef = doc(collection(db, "today_queue")); 
         const secureTrackerId = queueRef.id;
 
+        // 1. Write the Math (Public Queue) - PII REMOVED
         transaction.set(queueRef, {
-          tracker_id: secureTrackerId, token_number: nextToken, patient_uid: uid,
-          patient_name: patientName, department: selectedDept, doctor_id: selectedDoctor,
-          doctor_name: activeDocProfile.name, appointment_date: bookingDate,
-          session_block: sessionBlock, session_key: blockKey, is_physically_present: false, 
-          status: "booked", booking_type: "app", penalty_count: 0
+          tracker_id: secureTrackerId, 
+          token_number: nextToken, 
+          patient_uid: uid,
+          department: selectedDept, 
+          doctor_id: selectedDoctor,
+          doctor_name: activeDocProfile.name, 
+          appointment_date: bookingDate,
+          session_block: sessionBlock, 
+          session_key: blockKey, 
+          is_physically_present: false, 
+          status: "booked", 
+          booking_type: "app", 
+          penalty_count: 0
+        });
+
+        // 2. Write the Identity (Private PII) - NEW ARCHITECTURE
+        transaction.set(doc(db, "queue_pii", secureTrackerId), {
+          patient_name: patientName,
+          patient_uid: uid,
+          phone_number: "+91" + phone
         });
 
         // Increment only this doctor/date/session counter.
@@ -230,9 +246,8 @@ export default function PatientOnboarding() {
         return secureTrackerId;
       });
 
-      toast.success("Token Confirmed! Opening your live tracker..."); // <-- TOAST
+      toast.success("Token Confirmed! Opening your live tracker..."); 
       
-      // UX POLISH: Give the user 1 second to read the success message before redirecting
       setTimeout(() => {
         navigate(`/tracker/${generatedTrackerId}`);
       }, 1000);
@@ -240,12 +255,12 @@ export default function PatientOnboarding() {
     } catch (error) {
       console.error("Booking Failed:", error);
       if (error.message === 'CAPACITY_FULL') {
-        toast.error("The session filled up while you were booking. Please select another slot."); // <-- TOAST
+        toast.error("The session filled up while you were booking. Please select another slot."); 
       } else {
-        toast.error("Booking failed. Please ensure Admin has fully configured this doctor."); // <-- TOAST
+        toast.error("Booking failed. Please ensure Admin has fully configured this doctor."); 
       }
     } finally {
-      setIsProcessing(false); // <-- SAFE FINALLY BLOCK
+      setIsProcessing(false); 
     }
   };
 

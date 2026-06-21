@@ -4,18 +4,21 @@ import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Clock, AlertCircle, User, MapPin, Users, Activity, Timer, Info } from 'lucide-react';
 import { createSessionState } from '../utils/queueSession';
-import toast from 'react-hot-toast'; // <-- IMPORT TOAST
+import toast from 'react-hot-toast';
 
 export default function PatientTracker() {
   const { tokenId } = useParams();
   
+  // Core States
   const [ticket, setTicket] = useState(null);
+  const [patientName, setPatientName] = useState("Loading..."); // <-- PII STATE
   const [docProfile, setDocProfile] = useState(null);
   const [queueEngine, setQueueEngine] = useState(null);
   const [activeQueue, setActiveQueue] = useState([]); 
   
   const [clockTick, setClockTick] = useState(() => Date.now()); 
 
+  // 1. Fetch Public Math Ticket (today_queue)
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "today_queue", tokenId), (snap) => {
       if (snap.exists()) setTicket({ id: snap.id, ...snap.data() });
@@ -23,11 +26,23 @@ export default function PatientTracker() {
     return () => unsub();
   }, [tokenId]);
 
-  // NEW: PROACTIVE TOAST NOTIFICATIONS!
+  // 2. Fetch Secure Identity (queue_pii) - NEW ARCHITECTURE
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "queue_pii", tokenId), (snap) => {
+      if (snap.exists()) {
+        setPatientName(snap.data().patient_name);
+      } else {
+        setPatientName("Patient");
+      }
+    });
+    return () => unsub();
+  }, [tokenId]);
+
+  // 3. Proactive Notifications
   useEffect(() => {
     if (ticket?.status === 'called') {
       toast.success("It's your turn! Please proceed to the room.", {
-        duration: 8000, // Keep it on screen longer
+        duration: 8000,
         icon: '👨‍⚕️',
       });
     } else if (ticket?.status === 'skipped') {
@@ -37,22 +52,19 @@ export default function PatientTracker() {
     }
   }, [ticket?.status]);
 
+  // 4. Fetch Doctor & Queue State
   useEffect(() => {
     if (!ticket?.doctor_id) return;
-    const unsub = onSnapshot(doc(db, "doctors", ticket.doctor_id), (snap) => {
+    const unsubDocs = onSnapshot(doc(db, "doctors", ticket.doctor_id), (snap) => {
       if (snap.exists()) setDocProfile(snap.data());
     });
-    return () => unsub();
-  }, [ticket]);
-
-  useEffect(() => {
-    if (!ticket?.doctor_id) return;
-    const unsub = onSnapshot(doc(db, "doctor_queues", ticket.doctor_id), (snap) => {
+    const unsubQueue = onSnapshot(doc(db, "doctor_queues", ticket.doctor_id), (snap) => {
       if (snap.exists()) setQueueEngine(snap.data());
     });
-    return () => unsub();
-  }, [ticket]);
+    return () => { unsubDocs(); unsubQueue(); };
+  }, [ticket?.doctor_id]);
 
+  // 5. Fetch Active Lobby (Math Only, No PII)
   useEffect(() => {
     if (!ticket?.session_key || !ticket?.doctor_id) return;
     const q = query(
@@ -62,18 +74,30 @@ export default function PatientTracker() {
       where("status", "in", ["arrived", "called"]) 
     );
     const unsub = onSnapshot(q, (snap) => {
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      docs.sort((a, b) => {
+      // 🛡️ Map ONLY the math variables needed for ETA calculation
+      const safeDocs = snap.docs.map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          token_number: data.token_number,
+          penalty_count: data.penalty_count || 0,
+          status: data.status
+        };
+      });
+
+      safeDocs.sort((a, b) => {
         const PENALTY_WEIGHT = 3;
-        const aVirtualToken = a.token_number + ((a.penalty_count || 0) * PENALTY_WEIGHT);
-        const bVirtualToken = b.token_number + ((b.penalty_count || 0) * PENALTY_WEIGHT);
+        const aVirtualToken = a.token_number + (a.penalty_count * PENALTY_WEIGHT);
+        const bVirtualToken = b.token_number + (b.penalty_count * PENALTY_WEIGHT);
         return aVirtualToken - bVirtualToken;
       });
-      setActiveQueue(docs);
+      
+      setActiveQueue(safeDocs);
     });
     return () => unsub();
   }, [ticket?.session_key, ticket?.doctor_id]);
 
+  // Clock Engine
   useEffect(() => {
     const intervalId = window.setInterval(() => setClockTick(Date.now()), 60000); 
     return () => window.clearInterval(intervalId);
@@ -202,6 +226,13 @@ export default function PatientTracker() {
 
   const isActivelyWaiting = ['booked', 'arrived'].includes(ticket.status);
 
+  // UX POLISH: Dynamic Header for the ETA block
+  const getEtaHeader = () => {
+    if (ticket.status === 'called') return "Action Required";
+    if (ticket.status === 'in_consultation') return "Session Live";
+    return "Estimated Consultation";
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 p-6 flex flex-col items-center justify-center font-sans">
       <div className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100">
@@ -214,7 +245,7 @@ export default function PatientTracker() {
         <div className="p-8 text-center space-y-6">
           
           <div className="text-left bg-gray-50 rounded-xl p-4 border border-gray-100 text-sm text-gray-600 space-y-2">
-            <div className="flex items-center gap-2 font-medium"><User size={16} className="text-gray-400"/> {ticket.patient_name}</div>
+            <div className="flex items-center gap-2 font-medium"><User size={16} className="text-gray-400"/> {patientName}</div>
             <div className="flex items-center gap-2 font-medium"><MapPin size={16} className="text-emerald-500"/> Room: <span className="text-emerald-700 font-black">{docProfile?.current_room || "Ask reception"}</span></div>
           </div>
 
@@ -238,7 +269,7 @@ export default function PatientTracker() {
 
             <div className="flex flex-col items-center justify-center gap-2 mb-2">
               <Clock className="text-blue-500" size={28} />
-              <p className="text-blue-800 font-bold text-sm">Estimated Consultation</p>
+              <p className="text-blue-800 font-bold text-sm">{getEtaHeader()}</p>
               
               <span className="text-3xl font-black text-blue-900">
                 {isActivelyWaiting ? etaData.clockTime : "--:--"}

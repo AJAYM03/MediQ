@@ -11,8 +11,8 @@ service cloud.firestore {
     }
 
     function isStaff(roleType) {
-      return isAuthenticated() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
         getRole() == roleType;
     }
 
@@ -23,156 +23,129 @@ service cloud.firestore {
 
     // PATIENTS
     match /patients/{userId} {
-
-      // Patient can read own profile
-      // Admin/Reception can access patient directory
-      allow get: if isAuthenticated() &&
-        (
-          request.auth.uid == userId ||
-          isStaff('admin') ||
-          isStaff('reception')
-        );
-
+      // Patient can read own profile. Admin/Reception can access patient directory
+      allow get: if isAuthenticated() && (request.auth.uid == userId || isStaff('admin') || isStaff('reception'));
       allow list: if isStaff('admin') || isStaff('reception');
-
+      
       // Patient self-service booking updates
-      allow write: if isAuthenticated() &&
-                   request.auth.uid == userId &&
+      allow create, update: if isAuthenticated() && request.auth.uid == userId &&
                    'active_bookings' in request.resource.data &&
                    request.resource.data.active_bookings is list &&
                    request.resource.data.active_bookings.size() <= 3 &&
-                   (
-                     resource == null ||
-                     !('active_bookings' in resource.data) ||
-                     request.resource.data.active_bookings.hasAll(resource.data.active_bookings)
-                   );
-
-      // Reception/Nurse limited updates
+                   (resource == null || !('active_bookings' in resource.data) || 
+                    request.resource.data.active_bookings.hasAll(resource.data.active_bookings));
+                    
+      // SECURITY FIX: Nurse/Reception strict updates using hasOnly
       allow update: if (isStaff('reception') || isStaff('nurse')) &&
-                    request.resource.data
-                      .diff(resource.data)
-                      .affectedKeys()
-                      .hasOnly([
-                        'full_name',
-                        'age',
-                        'gender',
-                        'phone_number',
-                        'active_bookings',
-                        'last_updated',
-                        'registration_type'
-                      ]);
-
-      // Admin full access
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                      'full_name', 'age', 'gender', 'phone_number', 'active_bookings', 'last_updated', 'registration_type'
+                    ]);
       allow write: if isStaff('admin');
     }
 
-    // TODAY QUEUE
+    // 1. PUBLIC MATH: Safe for the Tracker to calculate ETAs
     match /today_queue/{tokenId} {
+      // Walk-ins and unauthenticated users can calculate the math safely
+      allow get, list: if true; 
 
-      // Patient can read exact ticket via tracker URL
-      allow get: if true;
-
-      // Authenticated users can query queue for ETA calculations
-      allow list: if isAuthenticated();
-
-      // Patient self-service booking creation
-      allow create: if isAuthenticated() &&
+      // STRICT PATIENT CREATION: No overwrites, strict schema floor + ceiling
+      allow create: if isAuthenticated() && 
+                    !exists(/databases/$(database)/documents/today_queue/$(tokenId)) &&
                     request.resource.data.patient_uid == request.auth.uid &&
-                    request.resource.data.booking_type == "app" &&
+                    request.resource.data.booking_type == "app" && 
                     request.resource.data.is_physically_present == false &&
                     request.resource.data.status == "booked" &&
                     request.resource.data.penalty_count == 0 &&
                     request.resource.data.token_number is number &&
                     request.resource.data.session_key is string &&
-                    exists(
-                      /databases/$(database)/documents/doctors/$(request.resource.data.doctor_id)
-                    ) &&
+                    exists(/databases/$(database)/documents/doctors/$(request.resource.data.doctor_id)) &&
+                    request.resource.data.keys().hasAll([
+                      'tracker_id', 'token_number', 'patient_uid', 
+                      'department', 'doctor_id', 'doctor_name', 'appointment_date', 
+                      'session_block', 'session_key', 'is_physically_present', 'status', 
+                      'booking_type', 'penalty_count'
+                    ]) &&
                     request.resource.data.keys().hasOnly([
-                      'tracker_id',
-                      'token_number',
-                      'patient_uid',
-                      'patient_name',
-                      'department',
-                      'doctor_id',
-                      'doctor_name',
-                      'appointment_date',
-                      'session_block',
-                      'session_key',
-                      'is_physically_present',
-                      'status',
-                      'booking_type',
-                      'penalty_count'
+                      'tracker_id', 'token_number', 'patient_uid', 
+                      'department', 'doctor_id', 'doctor_name', 'appointment_date', 
+                      'session_block', 'session_key', 'is_physically_present', 'status', 
+                      'booking_type', 'penalty_count'
                     ]);
-
-      // Staff operations
-      allow create, update, delete: if isStaff('admin') ||
-                                       isStaff('nurse') ||
-                                       isStaff('reception');
+                    
+      allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
     }
 
-    // DOCTOR QUEUES
+    // 2. PRIVATE PII: Identity is isolated and locked down
+    match /queue_pii/{tokenId} {
+      // Walk-ins can read their OWN name because the 20-character tokenId acts as a password
+      allow get: if true; 
+      
+      // BLOCKED: No one can scrape the list of names except staff
+      allow list: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
+      
+      // ULTIMATE PAYLOAD SECURITY: No overwrites, strict floor/ceiling, strict typing
+      allow create: if isAuthenticated() && 
+                    !exists(/databases/$(database)/documents/queue_pii/$(tokenId)) &&
+                    request.resource.data.patient_uid == request.auth.uid &&
+                    request.resource.data.patient_name is string &&
+                    request.resource.data.phone_number is string &&
+                    request.resource.data.patient_uid is string &&
+                    request.resource.data.keys().hasAll([
+                      'patient_name',
+                      'patient_uid',
+                      'phone_number'
+                    ]) &&
+                    request.resource.data.keys().hasOnly([
+                      'patient_name',
+                      'patient_uid',
+                      'phone_number'
+                    ]);
+      
+      // Staff full access
+      allow create, update, delete: if isStaff('admin') || isStaff('nurse') || isStaff('reception');
+    }
+
+    // DOCTOR QUEUES: Session-isolated counters and live ETA state.
     match /doctor_queues/{doctorId} {
-
       allow read: if true;
-
-      // Patient-side booking capacity updates
+      
       allow update: if isAuthenticated() &&
-                    request.resource.data
-                      .diff(resource.data)
-                      .affectedKeys()
-                      .hasOnly(['daily_bookings']) &&
-
-                    request.resource.data.daily_bookings
-                      .keys()
-                      .hasAll(resource.data.daily_bookings.keys()) &&
-
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['daily_bookings']) &&
                     (
-                      !exists(
-                        /databases/$(database)/documents/patients/$(request.auth.uid)
-                      ) ||
-
-                      !('active_bookings' in
-                        get(
-                          /databases/$(database)/documents/patients/$(request.auth.uid)
-                        ).data) ||
-
-                      get(
-                        /databases/$(database)/documents/patients/$(request.auth.uid)
-                      ).data.active_bookings.size() < 3
+                      !('daily_bookings' in resource.data) ||
+                      request.resource.data.daily_bookings.keys().hasAll(resource.data.daily_bookings.keys())
+                    ) &&
+                    (
+                      !exists(/databases/$(database)/documents/patients/$(request.auth.uid)) ||
+                      !('active_bookings' in get(/databases/$(database)/documents/patients/$(request.auth.uid)).data) ||
+                      get(/databases/$(database)/documents/patients/$(request.auth.uid)).data.active_bookings.size() < 3
                     );
 
-      allow update: if isStaff('nurse') || isStaff('reception');
-
+      allow update: if isStaff('nurse') || isStaff('reception'); 
       allow write: if isStaff('admin');
     }
 
-    // DEPARTMENTS
+    // CONFIGURATION
     match /departments/{deptId} {
       allow read: if true;
       allow write: if isStaff('admin');
     }
-
-    // DOCTORS
+    
+    // DOCTORS: With context-aware Capacity Enforcement
     match /doctors/{docId} {
-
       allow read: if true;
-
-      allow write: if isStaff('admin') &&
+      
+      allow write: if isStaff('admin') && 
         (
-          !('op_schedule' in request.resource.data) ||
-
+          !('op_schedule' in request.resource.data) || 
           (
-            (
-              !('morning' in request.resource.data.op_schedule) ||
-              !request.resource.data.op_schedule.morning.enabled ||
-              request.resource.data.op_schedule.morning.capacity > 0
-            ) &&
-
-            (
-              !('evening' in request.resource.data.op_schedule) ||
-              !request.resource.data.op_schedule.evening.enabled ||
-              request.resource.data.op_schedule.evening.capacity > 0
-            )
+            (!('morning' in request.resource.data.op_schedule) || 
+             !request.resource.data.op_schedule.morning.enabled || 
+             request.resource.data.op_schedule.morning.capacity > 0) 
+            &&
+            (!('evening' in request.resource.data.op_schedule) || 
+             !request.resource.data.op_schedule.evening.enabled || 
+             request.resource.data.op_schedule.evening.capacity > 0)
           )
         );
     }
