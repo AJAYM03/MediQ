@@ -180,7 +180,15 @@ export default function PatientTracker() {
       countdownText = "Consultation in progress";
     } 
     else if (!sessionState.session_active) {
-      countdownText = "Session has not started yet";
+      if (sessionState.current_serving_token > 0) {
+        if (ticket.status === 'arrived') {
+          countdownText = "Waiting for next patient to be called";
+        } else {
+          countdownText = "Queue is currently empty / waiting for patients";
+        }
+      } else {
+        countdownText = "Session has not started yet";
+      }
     } 
     else if (!hasActiveConsultation) {
       if (displayAhead === 0) {
